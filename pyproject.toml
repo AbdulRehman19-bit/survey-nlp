@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "survey-nlp"
+version = "0.3.0"
+requires-python = ">=3.10"
+
+[project.scripts]
+survey-nlp = "survey_nlp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

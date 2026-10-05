@@ -1,0 +1,118 @@
+run_dir: runs/latest
+seed: 42
+device: auto            # auto | cpu | cuda | mps
+
+input:
+  path: data/coco_pops_VR.xlsx
+  sheet: 0
+  header_row: 3                # real column names are in row 4 of this export
+  skip_rows: 1                 # row under the header holds question IDs, not answers
+  id_col: null                 # respondent ID column; null -> row number
+  text_cols:                   # "auto" or an explicit list
+    - "What did you LIKE about this product overall? - value"
+    - "What did you NOT LIKE about this product overall? - value"
+  keep_cols: []
+  min_chars: 2
+  non_answer_examples:         # added: answers that MEAN "nothing to say", matched by embedding similarity
+    - "I have no complaints"
+    - "I didn't find any negative"
+    - "Nothing to report on the negative side"
+    - "There is nothing I disliked"
+    - "No downsides or issues"
+    - "I can't think of anything"
+    - "Nothing at all"
+    - "No bad points at all"
+    - "I struggle to find anything negative"
+    - "Can't fault it"
+    - "All good, nothing to add"
+  non_answer_min_sim: 0.80
+  non_answer_regex: '^(n/?a|none|nil|nope?|no comment|-+|(there (is|was) |i (have|had) )?nothing\b(?!.*\b(smell|doesn.?t|not|too|but)\b).*|no (dislikes?|negatives?|complaints?|issues?)\b.*|not (one|a single) thing\b.*|.*\b(nothing|no|not anything|anything) (to|i) ?(dislike|disliked|fault|complain)\b.*|.*\b(didn.?t|don.?t|did not|do not) (have any |really )?dislike[sd]?( anything| a thing)?)[ .!]*$'
+  auto_detect:
+    min_mean_words: 4
+    min_unique_ratio: 0.3
+
+segment:
+  contrast_words: [but, however, although, though, yet, whereas]
+  min_words: 2
+
+embed:
+  model: BAAI/bge-small-en-v1.5
+  batch_size: 128
+  max_seq_length: 128
+  fp16: true
+  cache_dir: cache
+
+themes:
+  scope: pooled
+  spacy_model: en_core_web_sm
+  min_words: 2
+  max_fit_clauses: 20000
+  fallback_max_clauses: 4000
+  umap_dims: 5
+  umap_neighbors: 15
+  min_cluster_size: 8
+  min_cluster_frac: 0.01
+  min_samples: 3
+  merge_cosine: 0.9
+  min_themes: 2
+  max_themes: 10
+  min_theme_clauses: 12
+  fallback_k_range: [2, 10]
+  n_keywords: 8
+  center: true                 # added: centre embeddings before centroid/assign (themes become separable)
+  curation:                    # added: human edits applied to the discovered themes, by name
+    merge: {Flavour: [Flavour, Taste]}
+    rename: {Smell: Aroma, Sugar: Sweetness, Coco: Coco Pops Brand}
+    drop: [Product]
+    seeds:                     # example phrases that sharpen broad themes (appended to the discovered members)
+      Flavour: ["I like the flavour", "the taste is good", "tastes delicious", "nice chocolate flavour", "the flavour is not strong enough", "not enough taste", "crunchy and tasty", "rich cocoa taste", "it was bland"]
+      Aroma: ["the smell is nice", "smells good when opened", "the aroma is weak", "smells artificial", "no smell at all", "I expected a stronger chocolate scent"]
+      Sweetness: ["too sweet", "a bit sugary", "high sugar content", "not too sweet"]
+    extra_keywords:            # hand-written keywords REPLACE the discovered ones for that theme ("re:" = raw regex)
+      Flavour: [flavour, flavours, flavor, flavors, flavoursome, taste, tastes, tasty, delicious, bland, chocolatey, chocolaty, cocoa, bitter, aftertaste, yummy]
+      White Chocolate: [white, vanilla, cream, creamy, lighter]
+      Milk: ["re:milk(?! chocolate)", soggy, mushy, slimy, soak, soaked]
+      Pieces: [piece, pieces, shape, shaped, shapes, size, sizes, sized, big, bigger, small, smaller, flakes, shells, ridged, ridges]
+      Packaging: [packaging, package, pack, packing, box, bag, resealable, monkey, character, mascot]
+      Coco Pops Brand: [coco, pops, cocopops, kellogg, kelloggs, original, classic, brand]
+      Aroma: [aroma, smell, smells, smelling, scent, odour]
+      Sweetness: [sweet, sweetness, sugar, sugary, sugars]
+    add:
+      Colour:
+        keywords: [colour, colours, color, colors, colourful, bright]
+        seeds: ["I like the colour", "the colours are bright and attractive", "colourful pieces", "love the contrasting colours", "the colour of the pieces looks fun"]
+      Price:
+        keywords: [price, priced, cost, costs, expensive, cheap, cheaper, overpriced, promotion, afford, budget, value, money]
+        seeds: ["the price is too high", "good value for money", "it is expensive", "I wish it was cheaper", "reasonable price for the amount"]
+
+assign:
+  min_sim: 0.45                # calibrated (centred space): whole-assignment F1 0.85 on 194 labeled pairs, plateau 0.40-0.60
+  secondary_margin: 0.03
+  keyword_min_len: 3
+  center: true                 # added: must match themes.center
+  keyword_min_precision: 0.5   # added: drop generic keywords that mostly hit other themes' clauses
+
+overall:
+  model: cardiffnlp/twitter-roberta-base-sentiment-latest
+  batch_size: 64
+  max_length: 256
+
+absa:
+  model: yangheng/deberta-v3-base-absa-v1.1
+  batch_size: 64
+  max_length: 128
+  evidence_threshold: 0.60
+  allowance: 0.05
+  quantize_cpu: false
+
+output:
+  codes: {neutral: 0, positive: 1, negative: 2}
+  not_discussed_value: null
+  mixed_policy: stronger
+  include_overall: true
+  question_polarity:           # added: what a bare mention means in this question (by short question name)
+    Likes: {neutral_as: positive, opposite_min_conf: 0.80}
+  labels: {neutral: Neutral, positive: Positive, negative: Negative}   # added: words in the results sheet; null -> numeric codes only
+  question_labels:             # added: short column prefixes instead of the full question text
+    "What did you LIKE about this product overall? - value": Likes
+    "What did you NOT LIKE about this product overall? - value": Dislikes
