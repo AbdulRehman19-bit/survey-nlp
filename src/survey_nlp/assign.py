@@ -28,7 +28,12 @@ def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
     min_prec = c.get("keyword_min_precision", 0.0)
     for j, t in enumerate(themes):                      # whole-word keyword match, case-insensitive
         kws = list(t.get("curated_keywords", []))       # hand-written keywords REPLACE the discovered ones
-        if not kws:
+        if not kws and not c.get("use_discovered_keywords", False):
+            kws = []                                    # default: match by meaning only. Discovered keywords were right only ~1 time in 3
+                                                        # when they were the sole reason for a match; hand-written ones stay in force
+        elif not kws and "assign_keywords" in t:
+            kws = list(t["assign_keywords"])            # discovered, already filtered for being distinctive of this theme
+        elif not kws:
             for k in t["keywords"]:
                 if len(k) < c["keyword_min_len"]:
                     continue
@@ -39,7 +44,23 @@ def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
                     kws.append(k)
         if kws:
             K[:, j] = clauses["clause"].str.contains(_rx(kws), regex=True).to_numpy()
-    ii, jj = np.nonzero(A | K)
-    via = np.where(A[ii, jj] & K[ii, jj], "both", np.where(A[ii, jj], "semantic", "keyword"))
+    F = np.zeros_like(A)
+    fb = c.get("fallback_min_sim")
+    if fb is not None:                                  # a clause nothing else matched joins its best theme if it is at all close
+        lone = ~(A | K).any(axis=1) & (s1 >= fb)
+        F[r[lone], order[lone, 0]] = True
+    ii, jj = np.nonzero(A | K | F)
+    cap = c.get("max_themes_per_clause")
+    if cap:                                             # keep each clause's strongest themes: similarity + a bonus per kind of match
+        strength = S[ii, jj] + 0.15 * A[ii, jj] + 0.15 * K[ii, jj]
+        order_ = np.lexsort((-strength, ii))            # by clause, then strongest first
+        rank = np.zeros(len(ii), int)
+        first = np.r_[True, ii[order_][1:] != ii[order_][:-1]]
+        start = np.maximum.accumulate(np.where(first, np.arange(len(ii)), 0))
+        rank[order_] = np.arange(len(ii)) - start
+        keep = rank < cap
+        ii, jj = ii[keep], jj[keep]
+    via = np.where(A[ii, jj] & K[ii, jj], "both",
+                   np.where(A[ii, jj], "semantic", np.where(K[ii, jj], "keyword", "fallback")))
     return pd.DataFrame({"clause_id": clauses.clause_id.to_numpy()[ii], "theme_idx": jj,
                          "sim": S[ii, jj], "via": via})
