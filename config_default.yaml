@@ -1,0 +1,103 @@
+# Generic defaults: works on a new survey file with no editing. Layout, header row and open-ended columns are detected.
+# Run: survey-nlp run --config config_default.yaml --input data/your_file.xlsx
+run_dir: runs/auto
+seed: 42
+device: auto
+input:
+  path: data/survey.xlsx
+  sheet: 0
+  header_row: auto
+  skip_rows: 0
+  id_col: null
+  keep_cols: []
+  min_chars: 2
+  non_answer_examples:
+  - I have no complaints
+  - I didn't find any negative
+  - Nothing to report on the negative side
+  - There is nothing I disliked
+  - No downsides or issues
+  - I can't think of anything
+  - Nothing at all
+  - No bad points at all
+  - I struggle to find anything negative
+  - Can't fault it
+  - All good, nothing to add
+  non_answer_min_sim: 0.8
+  non_answer_regex: ^(n/?a|none|nil|nope?|no comment|-+|(there (is|was) |i (have|had) )?nothing\b(?!.*\b(smell|doesn.?t|not|too|but)\b).*|no (dislikes?|negatives?|complaints?|issues?)\b.*|not (one|a single)
+    thing\b.*|.*\b(nothing|no|not anything|anything) (to|i) ?(dislike|disliked|fault|complain)\b.*|.*\b(didn.?t|don.?t|did not|do not) (have any |really )?dislike[sd]?( anything| a thing)?)[ .!]*$
+  auto_detect:
+    min_mean_words: 4
+    min_unique_ratio: 0.3
+  layout: auto
+segment:
+  contrast_words:
+  - but
+  - however
+  - although
+  - though
+  - yet
+  - whereas
+  min_words: 2
+embed:
+  model: BAAI/bge-small-en-v1.5
+  batch_size: 128
+  max_seq_length: 128
+  fp16: true
+  cache_dir: cache
+themes:
+  scope: pooled
+  spacy_model: en_core_web_sm
+  min_words: 2
+  max_fit_clauses: 20000
+  fallback_max_clauses: 4000
+  umap_dims: 5
+  umap_neighbors: 15
+  min_cluster_size: 6
+  min_cluster_frac: 0.01
+  min_samples: 2
+  merge_cosine: 0.92
+  min_themes: 2
+  min_theme_clauses: 8
+  fallback_k_range:
+  - 2
+  - 10
+  n_keywords: 8
+  center: true
+  required: []
+  split_large_frac: 0.3
+  n_themes: 10
+assign:
+  min_sim: 0.3
+  secondary_margin: 0.03
+  keyword_min_len: 3
+  center: true
+  keyword_min_precision: 0.5
+  fallback_min_sim: 0.25
+  max_themes_per_clause: 2
+  use_discovered_keywords: false
+overall:
+  model: cardiffnlp/twitter-roberta-base-sentiment-latest
+  batch_size: 64
+  max_length: 256
+absa:
+  model: yangheng/deberta-v3-base-absa-v1.1
+  batch_size: 64
+  max_length: 128
+  evidence_threshold: 0.6
+  allowance: 0.05
+  quantize_cpu: false
+output:
+  codes:
+    neutral: 0
+    positive: 1
+    negative: 2
+  not_discussed_value: null
+  mixed_policy: stronger
+  include_overall: true
+  labels:
+    neutral: Neutral
+    positive: Positive
+    negative: Negative
+  question_labels: {}
+  auto_polarity: true
