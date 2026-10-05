@@ -14,14 +14,17 @@ def test_curate_merge_rename_drop_keywords():
     assert t[1]["curated_keywords"] == ["scent"]
 
 
-def test_curate_unknown_name_is_explained():
+def test_typed_edit_with_unknown_name_is_an_error_but_config_edit_is_skipped():
+    th_ = lambda: [{"theme_name": "A", "keywords": [], "frequency": 1}, {"theme_name": "B", "keywords": [], "frequency": 1}]
+    m = lambda: [np.array([0]), np.array([1])]
     try:
-        th._curate([{"theme_name": "A", "keywords": []}], [np.array([0])],
-                   {"n_keywords": 8, "min_themes": 1, "curation": {"drop": ["Nope"]}})
+        th._curate(th_(), m(), {"n_keywords": 8, "min_themes": 1, "curation": {"ops": [["drop", "Nope"]]}})
     except ValueError as e:
         assert "Nope" in str(e) and "A" in str(e)
     else:
         raise AssertionError("expected ValueError")
+    t, _ = th._curate(th_(), m(), {"n_keywords": 8, "min_themes": 1, "curation": {"drop": ["Nope"]}})
+    assert [x["theme_name"] for x in t] == ["A", "B"]                         # config edit: warned and skipped
 
 
 def test_required_theme_added_or_merged(monkeypatch):
@@ -36,3 +39,34 @@ def test_required_theme_added_or_merged(monkeypatch):
     t, C2 = th._apply_required(themes, C, np.zeros((1, 2), np.float32), c, None)
     assert [x["theme_name"] for x in t] == ["Flavour", "Price"]      # Taste took over by meaning; Price is new
     assert t[1]["curated_keywords"] == ["cost"] and C2.shape == (2, 2)
+
+
+def test_reduce_folds_small_themes_into_nearest_kept():
+    Ec = np.array([[1, 0], [1, 0.1], [1, -0.1], [0, 1], [0.1, 1], [0.9, 0.2]], np.float32)
+    merged = [np.array([0, 1, 2]), np.array([3, 4]), np.array([5])]          # 3 themes; keep 2
+    out = th._reduce(merged, Ec, 2)
+    assert [len(m) for m in out] == [4, 2]                                    # the single clause joined the x-axis theme
+    assert sorted(out[0].tolist()) == [0, 1, 2, 5]
+    assert len(th._reduce(merged, Ec, 10)) == 3                               # nothing to reduce
+
+
+def test_curate_ops_run_in_order_and_follow_renames():
+    themes = [{"theme_name": n, "keywords": [n.lower()], "frequency": 1} for n in ("Easy", "Bottle", "Cough", "Taste")]
+    merged = [np.array([0]), np.array([1]), np.array([2]), np.array([3])]
+    c = {"n_keywords": 8, "min_themes": 2, "curation": {"ops": [
+        ["merge", "Opening", ["Easy", "Bottle"]], ["rename", "opening", "Cap and bottle"], ["drop", "cough"]]}}
+    t, m = th._curate(themes, merged, c)
+    assert [x["theme_name"] for x in t] == ["Cap and bottle", "Taste"]
+    assert sorted(m[0].tolist()) == [0, 1]
+
+
+def test_theme_name_is_the_candidate_closest_in_meaning(monkeypatch):
+    import pandas as pd
+    import survey_nlp.embed as embed
+    vec = {"battery": np.array([1, 0], np.float32), "screen": np.array([0, 1], np.float32)}
+    monkeypatch.setattr(embed, "encode_cached", lambda keys, texts, cfg: np.stack([vec["screen" if "screen" in t else "battery"] for t in texts]))
+    clauses = pd.DataFrame({"clause": ["battery lasts, nice screen", "battery died, screen fine", "good battery and screen"] * 4})
+    Ec = np.tile(np.array([[0.2, 1.0]], np.float32), (12, 1))                  # this theme's centre points at "screen"
+    c = {"spacy_model": "en_core_web_sm", "n_keywords": 4, "name_min_share": 0.0, "name_candidates": 8}
+    out = th._name_themes(clauses, [np.arange(12)], c, Ec=Ec, mu=np.zeros((1, 2), np.float32), cfg=object())
+    assert out[0]["theme_name"] == "Screen"

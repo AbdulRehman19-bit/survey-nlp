@@ -37,7 +37,7 @@ def _cluster(X, c, seed):
     return best, sub
 
 
-def _name_themes(clauses, merged, c):
+def _name_themes(clauses, merged, c, Ec=None, mu=None, cfg=None):
     nlp = spacy.load(c["spacy_model"], disable=["ner", "lemmatizer"])
     docs = [" ".join(clauses["clause"].iloc[m]) for m in merged]
     cv = CountVectorizer(ngram_range=(1, 2), stop_words="english",
@@ -48,48 +48,153 @@ def _name_themes(clauses, merged, c):
     A = tf.sum() / len(docs)
     score = w * np.log(1 + A / np.maximum(tf.sum(0), 1))          # class-based TF-IDF
     out, used = [], set()
+    all_texts = clauses["clause"].str.lower()
     for i, m in enumerate(merged):
         order = np.argsort(-score[i])
         kws = terms[order[:c["n_keywords"]]].tolist()
         name = None
+        texts = clauses["clause"].iloc[m].str.lower()
+        cands = []
         for t in terms[order[:40]]:                                 # POS-guarded: head must be a noun
+            if len(t) < 4 or texts.str.contains(t, regex=False).mean() < c.get("name_min_share", 0.08):
+                continue                                            # fragments ("don") and words few clauses in the cluster use
             last = nlp(t)[-1]
             if last.pos_ in ("NOUN", "PROPN") and t.title() not in used:
-                name = t.title()
-                break
+                cands.append(t)
+                if len(cands) >= c.get("name_candidates", 8):
+                    break
+        name = None
+        if cands and Ec is not None and cfg is not None and c.get("name_by_meaning", True):
+            # Of the good-looking words, pick the one whose MEANING is closest to this theme's centre, so a theme about
+            # "tastes nice / fruity / refreshing" is not named after one flavour that happens to be frequent.
+            from . import embed
+            V = embed.encode_cached([sha("name:" + t) for t in cands], cands, cfg)
+            V = center(V, mu) if c.get("center") else V
+            centre = _unit(Ec[m].mean(0))
+            sims = V @ centre - 0.01 * np.arange(len(cands))        # tiny preference for the better c-TF-IDF rank
+            name = cands[int(np.argmax(sims))].title()
+        elif cands:
+            name = cands[0].title()
         name = name or kws[0].title()
         used.add(name)
-        out.append({"theme_name": name, "keywords": kws, "frequency": int(len(m))})
+        # Keywords used to MATCH clauses: a term must be common inside the theme and clearly more common there than in
+        # the whole survey ("taste" in a taste theme passes; "good", which every theme uses, does not).
+        match_kws = []
+        for t in terms[order[:c["n_keywords"] * 2]]:
+            if len(t) < c.get("keyword_min_len_match", 3) or all(nlp.vocab[w].is_stop for w in t.split()):
+                continue                                            # too short, or only function words ("it's", "quite")
+            share_in = texts.str.contains(r"\b" + re.escape(t) + r"\b", regex=True).mean()
+            share_all = all_texts.str.contains(r"\b" + re.escape(t) + r"\b", regex=True).mean()
+            if share_in >= c.get("keyword_min_share", 0.10) and share_in >= c.get("keyword_min_lift", 2.0) * share_all:
+                match_kws.append(t)
+        out.append({"theme_name": name, "keywords": kws, "assign_keywords": match_kws[:c["n_keywords"]],
+                    "frequency": int(len(m))})
+    return out
+
+
+def _candidates(E, ok, c, seed):
+    """Every theme the data supports: cluster, merge near-duplicates, drop tiny groups, split oversized ones."""
+    lab, sub = _cluster(E[ok], c, seed)
+    members = {l: ok[sub[lab == l]] for l in sorted(set(lab) - {-1})}
+    ls = list(members)
+    cents = np.stack([_unit(E[members[l]].mean(0)) for l in ls])
+    # merge near-duplicate clusters (connected components over centroid cosine)
+    _, comp = connected_components(csr_matrix(cents @ cents.T >= c["merge_cosine"]), directed=False)
+    groups = {}
+    for l, g in zip(ls, comp):
+        groups.setdefault(g, []).extend(members[l].tolist())
+    merged = [np.array(v) for v in groups.values() if len(v) >= c["min_theme_clauses"]]
+    return _split_large(merged, E, len(ok), c, seed)
+
+
+def _reduce(merged, Ec, n):
+    """Keep the n largest themes; every smaller one is folded into its most similar kept theme, so its clauses are
+    spread over the kept themes instead of being thrown away."""
+    merged = sorted(merged, key=len, reverse=True)
+    if not n or len(merged) <= n:
+        return merged
+    keep = [list(m) for m in merged[:n]]
+    cents = np.stack([_unit(Ec[m].mean(0)) for m in merged[:n]])
+    for m in merged[n:]:
+        j = int(np.argmax(cents @ _unit(Ec[m].mean(0))))
+        keep[j].extend(m.tolist())
+    return sorted((np.array(k) for k in keep), key=len, reverse=True)
+
+
+def _split_large(merged, E, n_usable, c, seed):
+    """A theme holding more than themes.split_large_frac of all clauses (one "Taste" blob) is clustered again on its
+    own, with a smaller minimum size, and replaced by its sub-themes."""
+    frac = c.get("split_large_frac")
+    if not frac:
+        return merged
+    out = []
+    for m in merged:
+        if len(m) <= frac * n_usable or len(m) < 4 * c["min_theme_clauses"]:
+            out.append(m)
+            continue
+        sub = dict(c, min_cluster_size=max(4, c["min_cluster_size"] // 2), min_samples=max(2, c["min_samples"] - 1),
+                   min_cluster_frac=0, min_themes=2)
+        lab, idx = _cluster(E[m], sub, seed)
+        parts = [m[idx[lab == l]] for l in sorted(set(lab) - {-1})]
+        parts = [p for p in parts if len(p) >= c["min_theme_clauses"]]
+        out.extend(parts if len(parts) >= 2 else [m])
     return out
 
 
 def _curate(themes, merged, c):
     """Optional human edits from config (themes.curation): merge / rename / extra_keywords / drop, by theme name."""
     cur = c.get("curation") or {}
-    names = [t["theme_name"] for t in themes]
 
-    def idx(n):
-        if n not in names:
-            raise ValueError(f"curation refers to unknown theme {n!r}. Discovered themes: {names}")
-        return names.index(n)
+    def idx(n):                                              # case-insensitive, ignores themes already merged away or dropped
+        for i, t in enumerate(themes):
+            if not t.get("_dead") and t["theme_name"].lower() == str(n).strip().lower():
+                return i
+        alive = [t["theme_name"] for t in themes if not t.get("_dead")]
+        raise ValueError(f"curation refers to unknown theme {n!r}. Themes: {alive}")
 
-    for new, group in (cur.get("merge") or {}).items():
+    def merge(new, group):
         ids = [idx(n) for n in group]
         keep = ids[0]
         merged[keep] = np.concatenate([merged[i] for i in ids])
         kws = list(dict.fromkeys(k for i in ids for k in themes[i]["keywords"]))
-        themes[keep].update(keywords=kws[:c["n_keywords"]], frequency=int(len(merged[keep])))
+        match = list(dict.fromkeys(k for i in ids for k in themes[i].get("assign_keywords", [])))
+        themes[keep].update(keywords=kws[:c["n_keywords"]], assign_keywords=match, frequency=int(len(merged[keep])))
         for i in ids[1:]:
             themes[i]["_dead"] = True
-        themes[keep]["theme_name"] = new
-        names = [t["theme_name"] for t in themes]
-    for old, new in (cur.get("rename") or {}).items():
+        themes[keep]["theme_name"] = new or themes[keep]["theme_name"]
+
+    def soft(what, fn, *args):
+        """Edits written in the config may name themes this data did not produce: warn and skip instead of failing."""
+        try:
+            fn(*args)
+        except ValueError as e:
+            print(f"WARNING: skipped curation ({what}): {e}")
+
+    def set_name(old, new):
         themes[idx(old)]["theme_name"] = new
-        names = [t["theme_name"] for t in themes]
-    for n, kws in (cur.get("extra_keywords") or {}).items():
-        themes[idx(n)]["curated_keywords"] = list(kws)       # bypass the generic-keyword filter in assign
-    for n in cur.get("drop") or []:
+
+    def set_keywords(n, kws):
+        themes[idx(n)]["curated_keywords"] = list(kws)         # bypass the generic-keyword filter in assign
+
+    def kill(n):
         themes[idx(n)]["_dead"] = True
+
+    for new, group in (cur.get("merge") or {}).items():
+        soft(f"merge into {new}", merge, new, group)
+    for old, new in (cur.get("rename") or {}).items():
+        soft(f"rename {old}", set_name, old, new)
+    for n, kws in (cur.get("extra_keywords") or {}).items():
+        soft(f"keywords for {n}", set_keywords, n, kws)
+    for n in cur.get("drop") or []:
+        soft(f"drop {n}", kill, n)
+    for op in cur.get("ops") or []:                          # edits made one after another at the prompt, applied in order
+        kind = op[0]
+        if kind == "merge":                                  # ["merge", new_name_or_null, [names...]]
+            merge(op[1], op[2])
+        elif kind == "rename":                               # ["rename", old, new]
+            themes[idx(op[1])]["theme_name"] = op[2]
+        elif kind == "drop":                                 # ["drop", name]
+            themes[idx(op[1])]["_dead"] = True
     keep = [i for i, t in enumerate(themes) if not t.get("_dead")]
     if len(keep) < c["min_themes"]:
         raise ValueError(f"Only {len(keep)} themes left after curation.")
@@ -143,24 +248,24 @@ def discover(clauses, E, cfg):
     if len(ok) < 2 * c["min_cluster_size"]:
         raise ValueError(f"Only {len(ok)} usable clauses; too few for theme discovery. "
                          "Use themes.scope: pooled or lower themes.min_cluster_size.")
-    lab, sub = _cluster(E[ok], c, seed)
-    members = {l: ok[sub[lab == l]] for l in sorted(set(lab) - {-1})}
-    ls = list(members)
-    cents = np.stack([_unit(E[members[l]].mean(0)) for l in ls])
-    # merge near-duplicate clusters (connected components over centroid cosine)
-    _, comp = connected_components(csr_matrix(cents @ cents.T >= c["merge_cosine"]), directed=False)
-    groups = {}
-    for l, g in zip(ls, comp):
-        groups.setdefault(g, []).extend(members[l].tolist())
-    merged = [np.array(v) for v in groups.values() if len(v) >= c["min_theme_clauses"]]
-    merged.sort(key=len, reverse=True)
-    merged = merged[:c["max_themes"]]
-    if len(merged) < c["min_themes"]:
-        raise ValueError(f"Only {len(merged)} themes found. Lower themes.min_cluster_size / min_theme_clauses.")
-    themes = _name_themes(clauses, merged, c)
-    themes, merged = _curate(themes, merged, c)
     mu = E.mean(0, keepdims=True)
     Ec = center(E, mu) if c.get("center") else E        # centroids live in the same space assign.run scores in
+    n_target = c.get("n_themes") or c.get("max_themes")
+    cc = dict(c)
+    merged = _candidates(E, ok, cc, seed)
+    while c.get("expand", True) and n_target and len(merged) < n_target and cc["min_cluster_size"] > 4:
+        # fewer candidates than requested: look for smaller topics before giving up
+        cc = dict(cc, min_cluster_size=max(4, cc["min_cluster_size"] - 2), min_samples=max(2, cc["min_samples"] - 1),
+                  min_cluster_frac=0)
+        merged = _candidates(E, ok, cc, seed)
+    n_found = len(merged)
+    merged = _reduce(merged, Ec, n_target)
+    if len(merged) < c["min_themes"]:
+        raise ValueError(f"Only {len(merged)} themes found. Lower themes.min_cluster_size / min_theme_clauses.")
+    themes = _name_themes(clauses, merged, c, Ec=Ec, mu=mu, cfg=cfg)
+    for t in themes:
+        t["candidates_found"] = n_found
+    themes, merged = _curate(themes, merged, c)
     C = np.stack([_unit(Ec[m].mean(0)) for m in merged]).astype(np.float32)
     names = [t["theme_name"] for t in themes]
     for name, seeds in ((c.get("curation") or {}).get("seeds") or {}).items():
@@ -179,8 +284,14 @@ def discover(clauses, E, cfg):
         seeds = spec["seeds"]
         V = embed.encode_cached([sha("seed:" + x.lower()) for x in seeds], seeds, cfg)
         V = center(V, mu) if c.get("center") else V
-        extra.append(_unit(V.mean(0)))
         kws = list(spec.get("keywords", []))
+        have = [i for i, t in enumerate(themes) if t["theme_name"].lower() == name.lower()]
+        if have:                                           # discovery already produced this theme: sharpen it, do not duplicate
+            j = have[0]
+            C[j] = _unit(C[j] + _unit(V.mean(0)))
+            themes[j]["curated_keywords"] = list(dict.fromkeys(themes[j].get("curated_keywords", []) + kws))
+            continue
+        extra.append(_unit(V.mean(0)))
         themes.append({"theme_name": name, "keywords": kws, "curated_keywords": kws, "frequency": 0, "seeded": True})
     if extra:
         C = np.vstack([C, np.stack(extra).astype(np.float32)])
