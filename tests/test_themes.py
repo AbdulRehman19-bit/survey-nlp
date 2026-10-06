@@ -70,3 +70,24 @@ def test_theme_name_is_the_candidate_closest_in_meaning(monkeypatch):
     c = {"spacy_model": "en_core_web_sm", "n_keywords": 4, "name_min_share": 0.0, "name_candidates": 8}
     out = th._name_themes(clauses, [np.arange(12)], c, Ec=Ec, mu=np.zeros((1, 2), np.float32), cfg=object())
     assert out[0]["theme_name"] == "Screen"
+
+
+def test_curation_may_drop_every_discovered_theme_when_required_themes_fill_the_output():
+    import numpy as np
+    import pytest
+    from survey_nlp.themes import _curate
+    themes = [{"theme_name": "A", "keywords": []}, {"theme_name": "B", "keywords": []}]
+    merged = [np.array([0]), np.array([1])]
+    c = {"min_themes": 2, "n_keywords": 8, "curation": {"drop": ["A", "B"]}}
+    with pytest.raises(ValueError):                                      # no required themes: still guarded
+        _curate([dict(t) for t in themes], list(merged), c)
+    kept, _ = _curate(themes, merged, {**c, "required": ["Price"]})
+    assert kept == []
+
+
+def test_cli_keeps_required_themes_from_the_config_unless_the_user_chose_some():
+    from survey_nlp.cli import _overrides, _empty
+    cfg = {"themes": {}}
+    assert "required" not in _overrides(cfg, _empty())["themes"]
+    e = {**_empty(), "required": [{"name": "Price"}]}
+    assert _overrides(cfg, e)["themes"]["required"] == [{"name": "Price"}]

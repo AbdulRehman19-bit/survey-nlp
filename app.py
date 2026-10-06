@@ -19,8 +19,12 @@ import yaml
 
 ROOT = Path(__file__).parent
 DEFAULTS = ROOT / "config_default.yaml"
+PRESETS = sorted(p.name for p in ROOT.glob("config*.yaml"))                 # settings presets: every config*.yaml next to the app
+DEFAULT_PRESET = DEFAULTS.name                                                # generic: themes come from the answers; other presets are optional
 APP_RUNS = ROOT / "runs" / "app"
+MIN_SIM, FALLBACK_SIM, EVIDENCE = 0.40, 0.30, 0.60      # matching strictness: fixed defaults, not shown on the page
 GREEN, YELLOW, RED = "#C6EFCE", "#FFEB9C", "#FFC7CE"
+NOT_THEMES = ("respondent_id", "Answer", "Overall", "No theme")      # columns on a question sheet that are not themes
 INTERNAL_SHEETS = {"results", "results_codes", "detail", "pairs", "themes", "timings"}
 
 st.set_page_config(page_title="Survey themes and sentiment", layout="wide")
@@ -82,9 +86,22 @@ def parse_required(text: str):
     return out
 
 
+def load_preset(name: str) -> dict:
+    return yaml.safe_load((ROOT / name).read_text(encoding="utf-8"))
+
+
+def polarity_choice(entry) -> str:
+    """The question-polarity choice a preset already makes for a question (the starting value of the selector)."""
+    if not entry:
+        return "Auto"
+    if entry.get("off"):
+        return "None"
+    return {"positive": "Positive (a 'like' question)", "negative": "Negative (a 'dislike' question)"}.get(entry.get("neutral_as"), "Auto")
+
+
 def build_config(s: dict) -> dict:
-    """Generic defaults + whatever the user chose on the Data step."""
-    cfg = yaml.safe_load(DEFAULTS.read_text(encoding="utf-8"))
+    """The chosen settings preset (a config*.yaml) + whatever the user chose on the Data step."""
+    cfg = load_preset(s["preset"])
     cfg["run_dir"] = s["run_dir"]
     i = cfg["input"]
     i.update(path=s["path"], sheet=s["sheet"], header_row=s["header"], layout=s["layout"])
@@ -94,25 +111,42 @@ def build_config(s: dict) -> dict:
         i.update(question_col=s["question_col"], text_col=s["text_col"])
     else:
         i["text_cols"] = s["text_cols"]
-    cfg["assign"].update(min_sim=s["min_sim"], fallback_min_sim=s["fallback"])
-    cfg["absa"].update(evidence_threshold=s["evidence"])
-    cfg["themes"]["n_themes"] = s["edits"]["n_themes"]
+    cfg["assign"].setdefault("min_sim", s["min_sim"])                  # the preset's values win; these are only fallbacks
+    cfg["assign"].setdefault("fallback_min_sim", s["fallback"])
+    cfg["absa"].setdefault("evidence_threshold", s["evidence"])
+    cfg["themes"]["n_themes"] = cfg["themes"]["n_total"] = s["edits"]["n_themes"]      # the number chosen is the total, fixed themes included
+    base = dict(cfg["output"].get("question_polarity") or {})           # the preset's own choices (with their finer settings) stay
     pol = {}
     for q, choice in s["polarity"].items():
         if choice == "Positive (a 'like' question)":
-            pol[q] = {"neutral_as": "positive", "overall": "short"}
+            keep = base.get(q) if (base.get(q) or {}).get("neutral_as") == "positive" else None
+            pol[q] = keep or {"neutral_as": "positive", "overall": "short", "themes_follow_question": True}
         elif choice == "Negative (a 'dislike' question)":
-            pol[q] = {"neutral_as": "negative", "overall": "short"}
+            keep = base.get(q) if (base.get(q) or {}).get("neutral_as") == "negative" else None
+            pol[q] = keep or {"neutral_as": "negative", "overall": "short", "themes_follow_question": True}
         elif choice == "None":
             pol[q] = {"off": True}
-    cfg["output"]["question_polarity"] = pol
-    cfg["output"]["auto_polarity"] = True
+    cfg["output"]["question_polarity"] = pol                            # "Auto" = no entry: the polarity is read from the answers
+    cfg["output"].setdefault("auto_polarity", True)
     return cfg
 
 
-def overrides_for(edits: dict) -> dict:
-    return {"themes": {"n_themes": edits["n_themes"], "required": edits["required"],
-                       "curation": {"ops": list(edits["ops"])}}}
+def overrides_for(cfg: dict, edits: dict) -> dict:
+    """Themes the preset requires + the ones added here. Removing or renaming a required theme in the table changes this list
+    (the pipeline's own edit operations only know discovered themes); other edits go on as operations."""
+    req = [dict(r) if isinstance(r, dict) else {"name": r} for r in (cfg["themes"].get("required") or [])]
+    mine = {r["name"].lower() for r in edits["required"]}
+    req = [r for r in req if r["name"].lower() not in mine] + [dict(r) for r in edits["required"]]
+    ops = []
+    for op in edits["ops"]:
+        hit = [r for r in req if op[0] in ("drop", "rename") and r["name"].lower() == str(op[1]).lower()]
+        if not hit:
+            ops.append(op)
+        elif op[0] == "drop":
+            req.remove(hit[0])
+        else:
+            hit[0]["name"] = op[2]
+    return {"themes": {"n_themes": edits["n_themes"], "required": req, "curation": {"ops": ops}}}
 
 
 def run_stage(cfg: dict, edits: dict, until: str, force=False):
@@ -125,11 +159,13 @@ def run_stage(cfg: dict, edits: dict, until: str, force=False):
         log = LiveLog(st.empty())
         try:
             with contextlib.redirect_stdout(log):
-                art = pipeline.run(str(cfg_path), until, force, overrides=overrides_for(edits))
-        except ValueError as e:
+                art = pipeline.run(str(cfg_path), until, force, overrides=overrides_for(cfg, edits))
+        except Exception as e:                  # shown as a message on the page instead of crashing the app
             status.update(label="That could not be applied", state="error")
-            raise
+            raise ValueError(str(e) if isinstance(e, ValueError) else f"{type(e).__name__}: {e}") from e
         status.update(label="Done", state="complete", expanded=False)
+    if until == "themes":                       # the table of themes has new rows: give its editor a fresh state
+        st.session_state.table_version = st.session_state.get("table_version", 0) + 1
     return art
 
 
@@ -227,10 +263,16 @@ with tab_data:
 
     st.subheader("Settings")
     s1, s2 = st.columns(2)
+    preset_name = DEFAULTS.name                                         # built-in settings: nothing to choose, everything is automatic
+    preset = load_preset(preset_name)
+    fixed = [r["name"] if isinstance(r, dict) else r for r in (preset["themes"].get("required") or [])]
+    if "edits" not in st.session_state:
+        st.session_state.edits = {**empty_edits(), "n_themes": max(preset["themes"].get("n_themes") or 10, len(fixed))}
     edits = ss("edits", empty_edits())
-    n_themes = s1.slider("How many themes to keep", 2, 30, edits["n_themes"],
-                         help="More themes are found first; the smaller ones are merged into the nearest kept theme.")
-    req_text = s1.text_area("Themes that must be included (one per line, optional words after a colon)",
+    n_themes = s1.slider("How many themes in total", 2, max(30, len(fixed) + 10), edits["n_themes"],
+                         help="The built-in general-comment theme and the themes you add count too. If there are more, the smallest ones are "
+                              "dropped (themes found in the answers first). A 'No theme' column is always added on top.")
+    req_text = s1.text_area("Extra themes that must be included (one per line, optional words after a colon)",
                             value="\n".join(r["name"] + (": " + ", ".join(r["keywords"]) if r.get("keywords") else "")
                                             for r in edits["required"]),
                             placeholder="Price: cost, expensive, cheap\nPackaging", height=110)
@@ -238,23 +280,22 @@ with tab_data:
     s2.write("**What does each question ask?** A bare mention is read as praise or as a complaint.")
     polarity = {}
     choices = ["Auto", "Positive (a 'like' question)", "Negative (a 'dislike' question)", "None"]
+    preset_pol = preset["output"].get("question_polarity") or {}
     for q in questions:
-        polarity[short[q]] = s2.selectbox(f"{short[q]}", choices, key=f"pol_{q}")
-    with st.expander("Advanced"):
-        a1, a2, a3 = st.columns(3)
-        min_sim = a1.slider("Match strength to a theme", 0.10, 0.70, 0.30, 0.01,
-                            help="Lower assigns more answers to themes, higher is stricter.")
-        fallback = a2.slider("Last-resort match", 0.05, 0.50, 0.25, 0.01,
-                             help="An answer nothing else matched joins its closest theme if at least this close.")
-        evidence = a3.slider("Sentiment confidence needed", 0.40, 0.90, 0.60, 0.05)
+        polarity[short[q]] = s2.selectbox(f"{short[q]}", choices, index=choices.index(polarity_choice(preset_pol.get(short[q]))),
+                                          key=f"pol_{q}_{preset_name}")
 
     new_required = parse_required(req_text)
     if n_themes != edits["n_themes"] or new_required != edits["required"]:
-        st.session_state.edits = {**edits, "n_themes": n_themes, "required": new_required}
+        # A different number of themes gives a different set of themes, so renames / merges / removals made on the old set
+        # no longer apply (they name themes that may not exist any more). Start the edits again; added themes are kept.
+        ops = [] if n_themes != edits["n_themes"] else edits["ops"]
+        st.session_state.edits = {**edits, "n_themes": n_themes, "required": new_required, "ops": ops}
         st.session_state.pop("art", None)
+        st.session_state.table_version = st.session_state.get("table_version", 0) + 1
     stem = Path(path).stem
     settings = dict(path=path, sheet=sheet, header=header, layout=layout, question_col=question_col, text_col=text_col,
-                    text_cols=text_cols, polarity=polarity, min_sim=min_sim, fallback=fallback, evidence=evidence,
+                    text_cols=text_cols, polarity=polarity, preset=preset_name, min_sim=MIN_SIM, fallback=FALLBACK_SIM, evidence=EVIDENCE,
                     run_dir=str(APP_RUNS / stem), edits=st.session_state.edits)
     st.session_state.settings = settings
     st.success("Data ready. Go to the **Themes and analysis** tab.")
@@ -280,11 +321,19 @@ with tab_themes:
     art = st.session_state.get("art")
     if art and "themes" in art:
         table = themes_table(art)
-        found_n = next(iter(art["themes"].values()))[0][0].get("candidates_found") if art["themes"] else None
+        all_themes = [t for ts, _ in art["themes"].values() for t in ts]
+        found_n = max((t.get("candidates_found") or 0 for t in all_themes), default=0)
+        fixed_n = sum(1 for t in all_themes if t.get("required") or t.get("seeded"))     # from the preset or typed on the Data tab
+        found_kept = len(all_themes) - fixed_n
+        parts = []
         if found_n:
-            st.write(f"**{found_n} topics were found; the {len(table)} below are kept.** The rest were merged into the nearest kept theme.")
+            parts.append(f"**{found_n} topics were found in the answers; {found_kept} of them are kept** (the others were merged into the nearest kept one)")
+        if fixed_n:
+            parts.append(f"**{fixed_n} built-in or added themes** (general comments, plus any you typed)")
+        if parts:
+            st.write(" and ".join(parts) + f". The table shows all {len(table)}.")
         edited = st.data_editor(
-            table.drop(columns="_orig"), key="theme_table", hide_index=True, width="stretch",
+            table.drop(columns="_orig"), key=f"theme_table_{st.session_state.get('table_version', 0)}", hide_index=True, width="stretch",
             column_config={"Keep": st.column_config.CheckboxColumn("Keep", width="small"),
                            "Theme": st.column_config.TextColumn("Theme (click to rename)"),
                            "Clauses": st.column_config.NumberColumn("Answers in theme", disabled=True),
@@ -372,7 +421,7 @@ with tab_results:
     # headline numbers
     m = st.columns(4)
     n_answers = sum(len(sheets[q]) for q in question_sheets)
-    themed = sum(int((sheets[q][[c for c in sheets[q].columns if c not in ("respondent_id", "Answer", "Overall")]].notna().any(axis=1)).sum())
+    themed = sum(int((sheets[q][[c for c in sheets[q].columns if c not in NOT_THEMES]].notna().any(axis=1)).sum())
                  for q in question_sheets)
     m[0].metric("Answers", f"{n_answers:,}")
     m[1].metric("With at least one theme", f"{themed / max(n_answers, 1):.0%}")
@@ -383,7 +432,7 @@ with tab_results:
     for qt, qname in zip(qtabs, question_sheets):
         with qt:
             d = sheets[qname]
-            theme_cols = [c for c in d.columns if c not in ("respondent_id", "Answer", "Overall")]
+            theme_cols = [c for c in d.columns if c not in NOT_THEMES]
             counts = pd.DataFrame({c: d[c].value_counts() for c in theme_cols}).T.reindex(
                 columns=["Positive", "Neutral", "Negative"]).fillna(0).astype(int)
             counts = counts.assign(total=counts.sum(axis=1)).sort_values("total", ascending=False).drop(columns="total")

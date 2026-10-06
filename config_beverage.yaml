@@ -1,0 +1,283 @@
+# config_beverage.yaml - beverage open-ends scored against a human codebook (Eleni's).
+# Run:  survey-nlp run --config config_beverage.yaml --no-prompt --force
+# Score: python eval/compare_to_reference.py --pipeline runs/beverage/aspect_sentiment_results.xlsx --reference data/Comparison.xlsx
+# What changed vs config_open_ends.yaml (everything else is unchanged):
+#   mode: extended             -> turns ON the Like/Dislike question rules (spec mode had them OFF)
+#   output.question_polarity   -> Like answers default to Positive, Dislike to Negative; they flip only for a clearly evaluative
+#                                 opposite word, a complaint phrase (output.complaint_phrases) or a very confident model
+#   output.neutral_phrases     -> lukewarm wording ("okay", "nothing special", ...) makes the answer Neutral (general English)
+#   themes.required            -> the codebook as fixed themes (keywords + seeds). Non-specific is semantic-only and `general`:
+#                                 it receives generic remarks and every clause nothing else matched
+#   themes.learn_keywords: false -> only the keywords written here match, not words learned from the sample
+#   themes.curation.drop       -> the 2 leftover discovered themes duplicated codebook themes and are dropped
+#   assign.*                   -> min_sim 0.5, fallback_min_sim 0.3, max 2 themes per clause
+# Survey-specific content lives only in this file.
+run_dir: runs/beverage
+mode: extended
+seed: 42
+device: auto
+input:
+  path: data/open_ends.xlsx
+  sheet: 0
+  header_row: 0
+  skip_rows: 0
+  id_col: null
+  keep_cols: []
+  min_chars: 2
+  non_answer_examples:
+  - I have no complaints
+  - I didn't find any negative
+  - Nothing to report on the negative side
+  - There is nothing I disliked
+  - No downsides or issues
+  - I can't think of anything
+  - Nothing at all
+  - No bad points at all
+  - I struggle to find anything negative
+  - Can't fault it
+  - All good, nothing to add
+  non_answer_min_sim: 0.8
+  non_answer_regex: ^(n/?a|none|nil|nope?|no comment|-+|(there (is|was) |i (have|had) )?nothing\b(?!.*\b(smell|doesn.?t|not|too|but)\b).*|no (dislikes?|negatives?|complaints?|issues?)\b.*|not (one|a single)
+    thing\b.*|.*\b(nothing|no|not anything|anything) (to|i) ?(dislike|disliked|fault|complain)\b.*|.*\b(didn.?t|don.?t|did not|do not) (have any |really )?dislike[sd]?( anything| a thing)?)[ .!]*$
+  auto_detect:
+    min_mean_words: 4
+    min_unique_ratio: 0.3
+  question_col: Source
+  text_col: Text
+segment:
+  contrast_words:
+  - but
+  - however
+  - although
+  - though
+  - yet
+  - whereas
+  min_words: 2
+embed:
+  model: BAAI/bge-small-en-v1.5
+  batch_size: 128
+  max_seq_length: 128
+  fp16: true
+  cache_dir: cache
+themes:
+  scope: pooled
+  spacy_model: en_core_web_sm
+  min_words: 2
+  max_fit_clauses: 20000
+  fallback_max_clauses: 4000
+  umap_dims: 5
+  umap_neighbors: 15
+  min_cluster_size: 6
+  min_cluster_frac: 0.01
+  min_samples: 2
+  merge_cosine: 0.92
+  min_themes: 2
+  min_theme_clauses: 8
+  fallback_k_range:
+  - 2
+  - 10
+  n_keywords: 8
+  center: true
+  required:
+  - name: Flavour
+    seeds:
+    - I like the flavour
+    - the taste is good
+    - it tastes of fruit
+    - the flavour is unpleasant
+    - bad taste
+    - I do not like the taste
+    keywords:
+    - re:flavou?r|tast(e|es|ed|ing|y)\b|soda|juice|citrus|orange|lemon|lime|cherry|fruit(y|s)?\b|berry|berries|strawberr|mango|apple|grape|peach|tropical|cola|vanilla|mint|delicious|yummy|bland|bitter|sour|tangy
+  - name: Sweetness
+    seeds:
+    - it is too sweet
+    - not sweet enough
+    - just the right sweetness
+    - very sugary
+    - less sweet than other drinks
+    keywords:
+    - re:sweet|sugar|sickly|syrupy
+  - name: Mouthfeel
+    seeds:
+    - nice fizz
+    - not fizzy enough
+    - the texture is watery
+    - the carbonation is sharp
+    - feels thick in the mouth
+    keywords:
+    - re:fizz|sparkl|carbonat|bubbl|textur|watery|\bthick\b|\bthin\b|\bflat\b|\bgas(sy)?\b|mouth|throat|sticky|burp
+  - name: Aftertaste
+    seeds:
+    - unpleasant aftertaste
+    - a lingering aftertaste
+    - no aftertaste
+    - the aftertaste is bitter
+    keywords:
+    - re:after-?\s?tast|linger|residue|leav(es?|ing) (a |an )?(\w+ )?(taste|film|feeling)
+  - name: Aroma
+    seeds:
+    - the smell is strange
+    - it smells nice
+    - a chemical smell
+    - pleasant aroma
+    keywords:
+    - re:smell|aroma|scent|odou?r|fragrance|\bnose\b
+  - name: Artificial
+    seeds:
+    - it tastes artificial
+    - tastes of chemicals
+    - tastes fake
+    - not artificial tasting
+    keywords:
+    - re:artificial|chemical|fake|synthetic|processed|unnatural|plastic|sweetener|additive|preservative
+  - name: Medicine
+    seeds:
+    - tastes like medicine
+    - reminds me of cough syrup
+    - tastes like a drug
+    - like mouthwash
+    keywords:
+    - re:medic|cough|\bdrugs?\b|pharma|mouthwash|antiseptic|disinfect|remedy|paracetamol|\btablets?\b
+  - name: Packaging
+    seeds:
+    - the bottle is easy to open
+    - good packaging
+    - the label is clear
+    - the bottle splashes when opened
+    keywords:
+    - re:packag|bottle|\bcap\b|\blid\b|label|\bopen|pour|grip|splash|pouch|carton|wrapper|container
+  - name: Design
+    seeds:
+    - the design looks attractive
+    - it looks good
+    - the look is boring
+    - a classic design
+    keywords:
+    - re:design|\blooks?\b|looking|appearance|appealing|attractive|aesthetic|graphic|logo|stylish|sleek|classic|modern|visual
+  - name: Colour
+    seeds:
+    - I like the colour
+    - the colour is unnatural
+    - a bright colour
+    - the blue colour
+    keywords:
+    - re:colou?r|\bhue\b|\bshade\b|\bblue\b|\bgreen\b|\bred\b|\byellow\b|transparent|\bbright\b
+  - name: Energy
+    seeds:
+    - it gives me energy
+    - good after exercise
+    - helps me recover after a workout
+    - no energy boost
+    keywords:
+    - re:energ(y|is|iz|etic)|boost|stamina|caffeine|pick.me.up|recharg|vitality|revital
+  - name: Refreshing
+    seeds:
+    - very refreshing
+    - quenches my thirst
+    - cool and refreshing
+    - not refreshing
+    keywords:
+    - re:refresh|quench|thirst|\bcool(ing)?\b|crisp|\bcold\b|chill|\bfresh|invigorat
+  - name: Price
+    seeds:
+    - good price
+    - too expensive
+    - value for money
+    - cheap
+    keywords:
+    - re:\bprice|\bcosts?\b|cheap|expensive|afford|\bvalue\b|money|pricey|\bworth\b
+  - name: Brand
+    seeds:
+    - I trust the brand
+    - a well known brand
+    - I do not know this brand
+    - the brand name is recognisable
+    keywords:
+    - re:brand|company|famous|reputation|familiar|recogni[sz]|well.known|\btrusted\b
+  - name: Non-specific
+    semantic_only: true
+    general: true
+    seeds:
+    - It is good
+    - I like it
+    - I enjoyed it
+    - I do not like it
+    - Not for me
+    - No good
+  split_large_frac: 0.3
+  n_themes: 2
+  required_merge_cos: 0.95
+  learn_keywords: false
+  expand: false
+  curation:
+    # The 2 leftover discovered themes were duplicates of codebook themes (a "Flavour"-type group split by sentiment, and a
+    # fizzy-drink group that is Mouthfeel). Left in, they take clauses away from the codebook themes (lower recall), so they are dropped.
+    # The names depend on the seeds above; a name the data does not produce is skipped with a warning.
+    drop: [Orange Flavour, Fizzy, Flavour]
+assign:
+  min_sim: 0.5
+  secondary_margin: 0.03
+  keyword_min_len: 3
+  center: true
+  keyword_min_precision: 0.5
+  fallback_min_sim: 0.3
+  max_themes_per_clause: 2
+  use_discovered_keywords: false
+overall:
+  model: cardiffnlp/twitter-roberta-base-sentiment-latest
+  batch_size: 64
+  max_length: 256
+absa:
+  model: yangheng/deberta-v3-base-absa-v1.1
+  batch_size: 64
+  max_length: 128
+  evidence_threshold: 0.6
+  allowance: 0.05
+  quantize_cpu: false
+output:
+  codes:
+    neutral: 0
+    positive: 1
+    negative: 2
+  not_discussed_value: null
+  mixed_policy: stronger
+  include_overall: true
+  labels:
+    neutral: Neutral
+    positive: Positive
+    negative: Negative
+  question_labels: {}
+  auto_polarity: true
+  # Lukewarm wording. An answer that matches one of these and, with the matched words taken out, has no clearly positive or
+  # negative word is rated Neutral (overall and every theme). Plain English, regexes, case-insensitive.
+  # Wording that is a complaint by itself, so a Like answer containing it is Negative (a clear opposite word). "not too sweet" is not one.
+  complaint_phrases:
+  - (?<!not )(?<!n't )(?<!no )(?<!as )\btoo\s+\w+
+  - \bnot\s+(?:\w+\s+){0,2}enough\b
+  - \b(?:lacks?|lacking|lack of|insufficient|too little|could be better)\b
+  neutral_phrases:
+  - \b(?:ok|okay)\b
+  - \b(?:normal|average|ordinary|standard|typical|plain|moderate(?:ly)?|mild|mediocre|unremarkable|inoffensive|indifferent|acceptable|tolerable|passable|neutral|meh)\b
+  - \bso-so\b
+  - \bnothing (?:special|much|exceptional|remarkable|extraordinary)\b
+  - \bnot (?:particularly|especially|very|that) (?:good|great|special|impressive|memorable|exciting)\b
+  - \bneither (?:good|great|nice) nor (?:bad|terrible|awful)\b
+  - \bpleasant enough\b
+  - \bgood enough\b
+  - \b(?:alright|adequate|satisfactory|bearable|fine|fair)\b
+  - \bnothing wrong\b
+  - \bnothing to write home about\b
+  - \bmiddle of the road\b
+  # words that make a remark a complaint or a praise by themselves: an answer that still has one is not lukewarm
+  neutral_blockers:
+  - \b(?:too|overly|excessive(?:ly)?|lacks?|lacking|insufficient|unpleasant|awful|terrible|love|great|amazing|excellent)\b
+  question_polarity:
+    Like:
+      neutral_as: positive
+      overall: short
+      themes_follow_question: true
+    Dislike:
+      neutral_as: negative
+      overall: short
+      themes_follow_question: true

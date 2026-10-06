@@ -1,6 +1,7 @@
 # Generic defaults: works on a new survey file with no editing. Layout, header row and open-ended columns are detected.
 # Run: survey-nlp run --config config_default.yaml --input data/your_file.xlsx
 run_dir: runs/auto
+mode: extended        # extended = negation fix, Like/Dislike rating rules, lukewarm and complaint wording below. spec = the model's ratings only (see PROJECT_SPEC.md)
 seed: 42
 device: auto
 input:
@@ -64,18 +65,42 @@ themes:
   - 10
   n_keywords: 8
   center: true
-  required: []
+  center_strength: 0.7   # remove 70% of the shared direction, so the most common topic still has a direction
+  required:                       # built in, not survey-specific: generic remarks ("it is good", "not for me") get this theme
+  - name: General comment
+    semantic_only: true           # no keywords, matched by meaning only
+    general: true                 # also receives every clause no other theme matched, so every answer has a theme
+    seeds:
+    - It is good
+    - I like it
+    - I enjoyed it
+    - I do not like it
+    - Not for me
+    - No good
   split_large_frac: 0.3
   n_themes: 10
+  required_merge_cos: 0.95        # a built-in theme is added as its own theme, never renames a discovered one
 assign:
-  min_sim: 0.3
+  min_sim: 0.4
   secondary_margin: 0.03
   keyword_min_len: 3
   center: true
   keyword_min_precision: 0.5
-  fallback_min_sim: 0.25
+  fallback_min_sim: 0.3
   max_themes_per_clause: 2
   use_discovered_keywords: false
+  general_min_sim: 0.9          # a clause this close in meaning to a general comment below is left without a theme
+  general_examples:
+  - It is good
+  - I like it
+  - I enjoy it
+  - It is fine
+  - Normal
+  - Nothing special
+  - I would recommend it
+  - Overall it is nice
+  - I like the overall experience
+  - It is okay
 overall:
   model: cardiffnlp/twitter-roberta-base-sentiment-latest
   batch_size: 64
@@ -101,3 +126,26 @@ output:
     negative: Negative
   question_labels: {}
   auto_polarity: true
+  # General English, not tied to any survey. Edit or extend for your language / topic.
+  # A remark that is a complaint by itself: in a question that asks for praise the answer is rated Negative. 'not too sweet' is not one.
+  complaint_phrases:
+  - (?<!not )(?<!n't )(?<!no )(?<!as )\btoo\s+\w+
+  - \bnot\s+(?:\w+\s+){0,2}enough\b
+  - \b(?:lacks?|lacking|lack of|insufficient|too little|could be better)\b
+  # Lukewarm wording: with no clearly positive or negative word left over, the answer is rated Neutral.
+  neutral_phrases:
+  - \b(?:ok|okay)\b
+  - \b(?:normal|average|ordinary|standard|typical|plain|moderate(?:ly)?|mild|mediocre|unremarkable|inoffensive|indifferent|acceptable|tolerable|passable|neutral|meh)\b
+  - \bso-so\b
+  - \bnothing (?:special|much|exceptional|remarkable|extraordinary)\b
+  - \bnot (?:particularly|especially|very|that) (?:good|great|special|impressive|memorable|exciting)\b
+  - \bneither (?:good|great|nice) nor (?:bad|terrible|awful)\b
+  - \bpleasant enough\b
+  - \bgood enough\b
+  - \b(?:alright|adequate|satisfactory|bearable|fine|fair)\b
+  - \bnothing wrong\b
+  - \bnothing to write home about\b
+  - \bmiddle of the road\b
+  # Words that make a remark a complaint or praise by themselves, so it is not lukewarm.
+  neutral_blockers:
+  - \b(?:too|overly|excessive(?:ly)?|lacks?|lacking|insufficient|unpleasant|awful|terrible|love|great|amazing|excellent)\b

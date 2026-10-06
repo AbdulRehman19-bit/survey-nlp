@@ -1,7 +1,7 @@
 import re
 import numpy as np
 import pandas as pd
-from .util import center
+from .util import center, sha
 
 
 def _rx(kws):
@@ -10,11 +10,24 @@ def _rx(kws):
     return re.compile("|".join(parts), re.I)
 
 
+def _general_sim(E, cfg):
+    """Cosine of each clause (raw embedding) to its closest example of a general comment ("It is good", "I like it")."""
+    from . import embed
+    ex = list(cfg["assign"]["general_examples"])
+    V = embed.encode_cached([sha("general:" + x.lower()) for x in ex], ex, cfg)
+    return (E @ V.T).max(1)
+
+
 def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
-    """clauses/E may be a subset (a scope); clause_id values are preserved in the output."""
+    """clauses/E may be a subset (a scope); clause_id values are preserved in the output.
+
+    A theme with `general: true` (e.g. "Non-specific") is the home of generic remarks. When one exists, a clause that matches
+    nothing else is routed to it instead of being dropped, and the general_examples exclusion below is not used (those
+    clauses are wanted in that theme, not left without one)."""
     c = cfg["assign"]
-    if c.get("center"):                                 # must match themes.center (same clause set -> same mean)
-        E = center(E)
+    E_raw = E
+    if c.get("center"):                                 # themes.center: centres were built in this centred space, so score in it
+        E = center(E, strength=cfg["themes"].get("center_strength", 1.0))
     S = E @ C.T                                         # all clauses x all themes in one matmul
     n = len(S)
     r = np.arange(n)
@@ -25,34 +38,32 @@ def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
     sec = (s2 >= c["min_sim"]) & ((s1 - s2) <= c["secondary_margin"]) & (order[:, 1] != order[:, 0])
     A[r[sec], order[sec, 1]] = True
     K = np.zeros_like(A)
-    min_prec = c.get("keyword_min_precision", 0.0)
     for j, t in enumerate(themes):                      # whole-word keyword match, case-insensitive
-        kws = list(t.get("curated_keywords", []))       # hand-written keywords REPLACE the discovered ones
-        if not kws and not c.get("use_discovered_keywords", False):
-            kws = []                                    # default: match by meaning only. Discovered keywords were right only ~1 time in 3
-                                                        # when they were the sole reason for a match; hand-written ones stay in force
-        elif not kws and "assign_keywords" in t:
-            kws = list(t["assign_keywords"])            # discovered, already filtered for being distinctive of this theme
-        elif not kws:
-            for k in t["keywords"]:
-                if len(k) < c["keyword_min_len"]:
-                    continue
-                hit = clauses["clause"].str.contains(_rx([k]), regex=True).to_numpy()
-                # generic words ("good", "quite") match clauses of every theme: keep a discovered keyword only if
-                # most clauses containing it have this theme as their top-1 semantic theme
-                if hit.any() and (order[hit, 0] == j).mean() >= min_prec:
-                    kws.append(k)
-        if kws:
+        # Only words a person wrote for the theme (required themes, curation) match by keyword. The words discovered from the
+        # data are right only about 1 time in 3 and made a clause match 3.6 themes on average; set
+        # assign.use_discovered_keywords: true to bring them back.
+        kws = t.get("curated_keywords") or (t["keywords"] if c.get("use_discovered_keywords") else [])
+        kws = [k for k in kws if k.startswith("re:") or len(k) >= c["keyword_min_len"]]
+        if kws:                                         # a keyword starting with "re:" is a raw regex
             K[:, j] = clauses["clause"].str.contains(_rx(kws), regex=True).to_numpy()
+    general = [j for j, t in enumerate(themes) if t.get("general")]
+    if c.get("general_examples") and not general:       # generic remarks are left without a theme (only when no theme wants them)
+        left = _general_sim(E_raw, cfg) >= c.get("general_min_sim", 0.9)
+        A[left] = False
     F = np.zeros_like(A)
     fb = c.get("fallback_min_sim")
     if fb is not None:                                  # a clause nothing else matched joins its best theme if it is at all close
         lone = ~(A | K).any(axis=1) & (s1 >= fb)
         F[r[lone], order[lone, 0]] = True
+    if general and c.get("general_catch_all", True):    # whatever is still unmatched is a generic remark
+        rest = ~(A | K | F).any(axis=1)
+        F[r[rest], general[0]] = True
     ii, jj = np.nonzero(A | K | F)
     cap = c.get("max_themes_per_clause")
     if cap:                                             # keep each clause's strongest themes: similarity + a bonus per kind of match
         strength = S[ii, jj] + 0.15 * A[ii, jj] + 0.15 * K[ii, jj]
+        if general:                                     # the general theme only fills a place no specific theme wants
+            strength = strength - 0.5 * np.isin(jj, general)
         order_ = np.lexsort((-strength, ii))            # by clause, then strongest first
         rank = np.zeros(len(ii), int)
         first = np.r_[True, ii[order_][1:] != ii[order_][:-1]]

@@ -141,3 +141,60 @@ per question), open-ended columns, a question-ID row under the header, short she
 
 Hand labels in these checks were made by Claude, not a human. Remaining known errors: negation inside a theme ("Not too sweet" rated negative for sweetness), and
 discovered theme names that do not describe their content well (for example a taste-in-general group named "Orange"); edit those in the app.
+
+## Update 5: agreement with a human codebook (beverage survey, Eleni's reference)
+
+**Why.** On `data/open_ends.xlsx` (500 answers, 250 Like / 250 Dislike) the pipeline run with `config_default.yaml` (`mode: spec`) disagreed with a
+human coder: it gave 86 Neutral where she has 26, it discovered themes that split by sentiment ("Orange Flavour" = positive flavour, "Flavour" = negative
+flavour) and it found none of Sweetness, Mouthfeel, Aftertaste, Aroma, Price, Brand. Her labels follow the question (92% of overall sentiments, 96% of theme
+polarities are "Like = Positive, Dislike = Negative"), with real exceptions only where the answer itself says the opposite.
+
+**What changed** (output format is unchanged; only values and theme names differ; survey-specific content is only in `config_beverage.yaml`):
+
+| Area | Change |
+|---|---|
+| Evaluation | `eval/compare_to_reference.py` scores a workbook against a human sheet: overall accuracy / macro-F1 / confusion, per-theme presence P/R/F1, Positive/Negative agreement where both coded (never the "% same" cell: blank-vs-blank inflates it). `--split even|odd` scores half of the rows. `eval/check_format.py` asserts the format of two workbooks matches |
+| Config | New `config_beverage.yaml`: `mode: extended`, Like/Dislike `question_polarity`, the 15 codebook themes as `themes.required` (regex keywords + seeds), `learn_keywords: false`, `required_merge_cos: 0.95`, `max_themes_per_clause: 2`, `min_sim 0.5`, `fallback_min_sim 0.3`, `curation.drop` for two leftover discovered themes that duplicated Flavour and Mouthfeel |
+| Every answer gets a theme | `assign.py`: restored `fallback_min_sim` and `max_themes_per_clause` (the working copy no longer had them). A required theme with `general: true` (Non-specific) receives generic remarks and every clause nothing else matched (`assign.general_catch_all`, default on); the `assign.general_examples` exclusion does not fire when such a theme exists. "No theme" column kept (now empty) |
+| Required themes | `semantic_only: true` (no keywords at all, e.g. Non-specific), `general: true`, `themes.learn_keywords: false` (only the keywords you wrote; words learned from the sample such as "good" or "bitter" put clauses in wrong themes). `curation.drop` may remove every discovered theme when required themes exist |
+| Lukewarm rule | `output.neutral_phrases` (regex list in the config): an answer matching one, with no clearly evaluative word left once the phrase is removed and none of `output.neutral_blockers` ("too", "lacks"...), is Neutral in Overall and in every theme. The list was written from general English, not from the reference's Neutral texts |
+| Opposite wording | `output.complaint_phrases` ("too sweet", "not ... enough", "lacks"; "not too sweet" is excluded): a Like answer containing one is Negative even if the model is unsure. Existing rules unchanged: evaluative opposite word, or model p >= 0.95 on a firm text |
+| Negation in a theme | The existing `lexical_fix` already handles "not too sweet", "not so artificial", "wasn't as artificial as": in the even rows every such case came out Positive for Sweetness / Artificial, matching the reference. No change needed |
+| CLI bug | `survey-nlp run --no-prompt` overwrote `themes.required` with an empty saved list, so the config's required themes were ignored. It now only overrides when the user chose some |
+
+**Results** (reference = Eleni, same 500 rows). Tuning (keywords, thresholds, phrase lists) used the **even rows only**; the **odd rows were scored once at the end**.
+
+| | before (all) | after: even (tuned on) | after: odd (held-out) | after (all) |
+|---|---|---|---|---|
+| Overall accuracy | 0.794 | 0.956 | **0.920** | 0.938 |
+| Overall macro-F1 | 0.658 | 0.759 | **0.752** | 0.757 |
+| Theme detection, weighted F1 | 0.474 | 0.865 | **0.855** | 0.860 |
+| Polarity agreement (cells both coded) | 0.834 | 0.979 | **0.966** | 0.973 |
+| Answers with no theme / mean themes per answer | 64 / 1.0 | | | 0 / 1.68 (reference 1.71) |
+| Overall Neutral predicted (reference 26) | 86 | | | 8 |
+
+Per-theme F1, before to after (even / odd / all): Flavour 0.74/0.78/0.76 to 0.91/0.92/0.92; Sweetness 0 to 0.89/0.87/0.88; Mouthfeel 0 to 0.87/0.85/0.86; Aftertaste 0 to 0.87/0.96/0.91;
+Aroma 0 to 0.91/0.89/0.90; Artificial 0.86/0.79/0.83 to 0.89/0.94/0.91; Medicine 0.86/0.77/0.81 to 1.00/0.93/0.96; Packaging 0.25/0.28/0.26 to 0.74/0.83/0.78; Design 0.50/0.38/0.45 to 0.72/0.73/0.72;
+Colour 0.40/0.29/0.34 to 0.88/0.88/0.88; Energy 0.57/0.64/0.61 to 0.86/0.84/0.85; Refreshing 0.46/0.30/0.39 to 0.91/0.83/0.87; Price 0 to 0.67/0.50/0.55; Brand 0 to 0.67/0.57/0.63; Non-specific 0 to 0.42/0.36/0.39.
+The "before" run is `config_default.yaml` on the same file; its theme names were mapped to the codebook groups by `compare_to_reference.py`.
+
+**Caveats.** The odd half is held-out for tuning, but it comes from the same file, the same survey and the same single coder, so it is not an independent sample; a second coder or a new survey would likely score lower.
+Even-half tuning looked at wrong answers per theme (not at the reference's Neutral texts). Keywords and phrase lists are general English for each topic, not copied answers.
+Hand labels from one coder (Eleni) are the only ground truth.
+
+**Known weak spots.**
+- Neutral: only 6 of 26 found (12 are called Negative, 8 Positive). Macro-F1 0.752 is just over the 0.75 target and depends on this small class. The rule catches lukewarm wording, not purely descriptive answers.
+- Price: precision 0.40 (20 predicted, 9 in the reference); Non-specific F1 0.39 (generic comments compete with specific themes; the catch-all also receives odd leftovers); Brand recall 0.56.
+- Packaging vs Design: "the packaging is attractive" is coded Design only by the reference, we give both.
+- Artificial: "not artificial" answers are given Artificial = Positive; the reference has no Artificial (+) column, so those count as false positives for presence.
+- Theme discovery is not stable when seeds change: the names of the 2 leftover discovered themes changed between runs, so `curation.drop` lists the names seen; any new leftover name would stay in the output as an extra column.
+- With `question_col` set (long format, as in `config_open_ends.yaml`) the workbook has no side-by-side `results` / `results_codes` sheets (existing behaviour, unchanged); with `layout: auto` it does.
+- The `themes` sheet lists different columns (`curated_keywords`, `seeded`, `required`, `general` instead of `assign_keywords`, `candidates_found`) because it is a dump of the theme records.
+
+**Streamlit app.** The app used to build its settings from `config_default.yaml` only (`mode: spec`, so the Like / Dislike rules were off). Data tab > Settings now has a **Settings preset** selector listing every `config*.yaml` next to `app.py` (default `config_default.yaml`, generic): its fixed themes, keywords, rating rules and thresholds are used, the question selectors start from the preset's polarity, and the table can remove or rename a fixed theme. Pick `config_beverage.yaml` only for this survey's codebook. A run through the app on `open_ends.xlsx` gives the same numbers as the command line.
+
+**Number of themes.** In the app the slider is now the TOTAL number of themes (fixed ones included); a "No theme" column is always added on top. It sets `themes.n_total`: when there are more themes than that, the smallest are dropped, themes found in the answers first, then fixed ones (asking for 10 with the 15-theme beverage preset gives its 10 largest). The config key can be used from the command line too.
+
+**Generic by default.** `config_default.yaml` is now `mode: extended` and carries the general-English lists (`complaint_phrases`, `neutral_phrases`, `neutral_blockers`), so any dataset gets the rating rules with no codebook; the polarity of each question is read from its answers (`auto_polarity`) unless set in the app. Only the theme names and topic keywords are survey-specific, and they live in an optional preset such as `config_beverage.yaml`. On the beverage file with the generic default: overall accuracy 0.938, macro-F1 0.757, polarity agreement 0.970 (the same rating rules), theme F1 0.48 because themes are found from the answers instead of the codebook, 20 of 500 answers without a theme.
+
+**Automatic in the app (supersedes the preset selector above).** The app has no settings to choose: it always uses the built-in `config_default.yaml`. Themes are discovered from the answers, each question's polarity is read from its answers (it can be overridden per question), the general-English rating rules are on, and a built-in "General comment" theme (matched by meaning, not by keywords) receives generic remarks and every clause nothing else matched, so every answer has a theme. Other `config*.yaml` files are still used from the command line (`survey-nlp run --config ...`). On the beverage file this way: overall accuracy 0.936, macro-F1 0.755, polarity agreement 0.966, 0 of 500 answers without a theme. Agreement of the discovered theme names with Eleni's codebook is low (weighted F1 0.36), as the names are discovered, not given.

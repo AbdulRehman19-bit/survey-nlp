@@ -80,7 +80,7 @@ def _deep_update(d, u):
 
 def run(config="config.yaml", until="export", force=False, overrides=None):
     cfg = Cfg.load(config)
-    _deep_update(cfg.raw, overrides)                    # e.g. themes.required chosen at the prompt
+    _deep_update(cfg.raw, overrides)
     set_seed(cfg["seed"])
     rd = Path(cfg["run_dir"])
     rd.mkdir(parents=True, exist_ok=True)

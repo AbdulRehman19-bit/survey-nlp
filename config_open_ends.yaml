@@ -1,4 +1,5 @@
 run_dir: runs/open_ends
+mode: spec            # spec = sentiment exactly as PROJECT_SPEC.md; remove or set to extended to re-enable negation fix, Like/Dislike rules, word lists
 seed: 42
 device: auto
 input:

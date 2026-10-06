@@ -37,7 +37,9 @@ def _overrides(cfg, edits):
     """Turn the user's choices into config overrides for the themes section."""
     cur = dict(cfg["themes"].get("curation") or {})
     cur["ops"] = list(cur.get("ops") or []) + edits["ops"]
-    th = {"required": edits["required"], "curation": cur}
+    th = {"curation": cur}
+    if edits["required"]:                                  # nothing chosen: keep themes.required from the config
+        th["required"] = edits["required"]
     if edits["n_themes"]:
         th["n_themes"] = edits["n_themes"]
     return {**_BASE, "themes": th}
@@ -187,7 +189,7 @@ def main():
             if input(f"Reuse your previous theme choices ({summary})? [Y/n]: ").strip().lower().startswith("n"):
                 edits = _empty()
         if not edits["ops"]:
-            edits["required"] = _ask_required(edits["required"])
+            edits["required"] = _ask_required(edits["required"] or cfg["themes"].get("required") or [])
             n = input(f"How many themes to keep? [{_default_n(cfg, edits)}]  (Enter = keep): ").strip()
             if n.isdigit() and 2 <= int(n) <= 50:
                 edits["n_themes"] = int(n)
