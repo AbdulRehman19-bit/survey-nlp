@@ -34,18 +34,30 @@ def _colour(ws, colour_of):
                 c.fill = PatternFill("solid", fgColor=col)
 
 
-def infer_polarity(codes_of_answers, codes, min_share=0.6, ratio=3.0):
-    """What does this question ask for? Read it from the answers: if the whole-answer ratings are overwhelmingly positive
-    the question asks for praise, if overwhelmingly negative it asks for complaints, otherwise (mixed answers) it has no
-    polarity and the sentiment model decides every rating. Needs no wording of the question."""
+_ASKS_COMPLAINT = re.compile(r"\b(?:not like|dislike[ds]?|didn.?t like|don.?t like|negative|worst|improve|complain\w*|wrong|problems?|issues?|hate[ds]?)\b", re.I)
+_ASKS_PRAISE = re.compile(r"\b(?:like[ds]?|enjoy\w*|love[ds]?|best|positive|favou?rite|good)\b", re.I)
+
+
+def infer_polarity(codes_of_answers, codes, min_share=0.6, ratio=3.0, name=None, min_signal=0.3):
+    """What does this question ask for? Read it from the answers: among the answers that took a side, if praise outweighs complaints
+    by `ratio` the question asks for praise, if complaints outweigh praise it asks for complaints. Models often call a complaint
+    Neutral ("a bit too sweet"), so the Neutral ones are left out of the comparison, but at least `min_signal` of all answers must
+    have taken a side. When the answers do not decide, the question's own wording is used ("What did you NOT LIKE", "Dislikes").
+    Mixed answers and no wording clue give no polarity, and the sentiment model decides every rating."""
     v = pd.Series(codes_of_answers).dropna()
     if len(v) < 10:
         return None
     pos, neg = (v == codes["positive"]).mean(), (v == codes["negative"]).mean()
-    if pos >= min_share and pos >= ratio * neg:
-        return {"neutral_as": "positive", "overall": "short", "themes_follow_question": True}
-    if neg >= min_share and neg >= ratio * pos:
-        return {"neutral_as": "negative", "overall": "short", "themes_follow_question": True}
+    if pos + neg >= min_signal:
+        if pos >= ratio * neg and pos >= min_share * (pos + neg):
+            return {"neutral_as": "positive", "overall": "short", "themes_follow_question": True}
+        if neg >= ratio * pos and neg >= min_share * (pos + neg):
+            return {"neutral_as": "negative", "overall": "short", "themes_follow_question": True}
+    if name:
+        if _ASKS_COMPLAINT.search(str(name)):
+            return {"neutral_as": "negative", "overall": "short", "themes_follow_question": True}
+        if _ASKS_PRAISE.search(str(name)):
+            return {"neutral_as": "positive", "overall": "short", "themes_follow_question": True}
     return None
 
 
@@ -112,7 +124,7 @@ def run(art, cfg, timings):
         qcols[name] = [(name, "Answer")]
         pol = (o.get("question_polarity") or {}).get(name) or (
             infer_polarity(Lq["overall_code"].where(Lq["valid"]), codes, o.get("polarity_min_share", 0.6),
-                           o.get("polarity_ratio", 3.0)) if o.get("auto_polarity") else None)
+                           o.get("polarity_ratio", 3.0), name=name) if o.get("auto_polarity") else None)
         if spec:
             pol = None
         if pol and pol.get("off"):                              # the user said this question has no polarity

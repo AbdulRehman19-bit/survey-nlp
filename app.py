@@ -329,7 +329,7 @@ with tab_themes:
         if found_n:
             parts.append(f"**{found_n} topics were found in the answers; {found_kept} of them are kept** (the others were merged into the nearest kept one)")
         if fixed_n:
-            parts.append(f"**{fixed_n} built-in or added themes** (general comments, plus any you typed)")
+            parts.append(f"**{fixed_n} built-in or added theme{'s' if fixed_n != 1 else ''}** (general comments, plus any you typed)")
         if parts:
             st.write(" and ".join(parts) + f". The table shows all {len(table)}.")
         edited = st.data_editor(

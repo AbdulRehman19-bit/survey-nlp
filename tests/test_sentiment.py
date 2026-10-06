@@ -197,3 +197,20 @@ def test_lukewarm_answers_are_neutral_in_overall_and_themes_but_other_answers_ke
         return r["Overall"].iloc[0], r["T"].iloc[0]
     assert run("The sweetness is okay") == (0, 0)
     assert run("The sweetness is great") == (1, 1)
+
+
+def test_infer_polarity_ignores_neutral_answers_when_the_rest_clearly_take_a_side():
+    from survey_nlp.export import infer_polarity
+    codes = {"neutral": 0, "positive": 1, "negative": 2}
+    assert infer_polarity([2] * 8 + [0] * 10 + [1] * 2, codes)["neutral_as"] == "negative"      # complaints the model called Neutral
+    assert infer_polarity([0] * 18 + [2, 1], codes) is None                                      # almost nobody took a side
+
+
+def test_infer_polarity_falls_back_to_the_wording_of_the_question():
+    from survey_nlp.export import infer_polarity
+    codes = {"neutral": 0, "positive": 1, "negative": 2}
+    mixed = [1] * 10 + [2] * 8 + [0] * 2
+    assert infer_polarity(mixed, codes, name="What did you NOT LIKE about it?")["neutral_as"] == "negative"
+    assert infer_polarity(mixed, codes, name="Dislikes")["neutral_as"] == "negative"
+    assert infer_polarity(mixed, codes, name="Likes")["neutral_as"] == "positive"
+    assert infer_polarity(mixed, codes, name="Comments") is None
