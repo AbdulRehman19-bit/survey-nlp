@@ -15,3 +15,4 @@ pyyaml
 tqdm
 pytest
 streamlit
+pyspellchecker

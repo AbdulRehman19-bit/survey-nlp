@@ -12,6 +12,8 @@ input:
   id_col: null
   keep_cols: []
   min_chars: 2
+  spell_correct: true         # repair typos in the text the models read (the answer shown in the results is unchanged); changes are listed on the 'spelling' sheet
+  spell_min_count: 3          # a word written this many times is not a typo
   non_answer_examples:
   - I have no complaints
   - I didn't find any negative
@@ -86,11 +88,11 @@ themes:
   required_merge_cos: 0.95        # a built-in theme is added as its own theme, never renames a discovered one
 assign:
   min_sim: 0.4
-  secondary_margin: 0.03
+  secondary_margin: 0.1
   keyword_min_len: 3
   center: true
   keyword_min_precision: 0.5
-  fallback_min_sim: 0.04
+  fallback_min_sim: 0.12
   max_themes_per_clause: 2
   use_discovered_keywords: false
   general_min_sim: 0.9          # a clause this close in meaning to a general comment below is left without a theme

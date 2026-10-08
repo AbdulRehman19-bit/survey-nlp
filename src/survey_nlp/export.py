@@ -237,7 +237,7 @@ def run(art, cfg, timings):
              label.get(codes["neutral"], codes["neutral"]): YELLOW}
     colour_of = lambda v: shade.get(v) if isinstance(v, (str, int)) and not isinstance(v, bool) else None
     other = [c for c in base.columns if c != "row_id"]                       # respondent id + keep_cols
-    reserved = {"results", "results_codes", "detail", "pairs", "themes", "timings", COMBINED.lower()}
+    reserved = {"results", "results_codes", "detail", "pairs", "themes", "timings", "spelling", COMBINED.lower()}
 
     def sheet_name(n):
         n = "".join(ch for ch in n if ch not in '[]:*?/\\')[:31] or "Question"     # characters Excel forbids in sheet names
@@ -275,6 +275,9 @@ def run(art, cfg, timings):
         detail.to_excel(xw, sheet_name="detail", index=False)
         pairs.to_excel(xw, sheet_name="pairs", index=False)
         theme_tbl.to_excel(xw, sheet_name="themes", index=False)
+        sp_file = rd / "spelling_corrections.json"
+        if sp_file.exists() and json.loads(sp_file.read_text()):                 # typos repaired before the models read the answers
+            pd.DataFrame(json.loads(sp_file.read_text())).to_excel(xw, sheet_name="spelling", index=False)
         pd.DataFrame([{"stage": k, "seconds": v} for k, v in timings.items()]).to_excel(xw, sheet_name="timings", index=False)
     (rd / "discovered_themes.json").write_text(json.dumps({s: t for s, (t, _) in T.items()}, indent=2))
     (rd / "timings.json").write_text(json.dumps(timings, indent=2))

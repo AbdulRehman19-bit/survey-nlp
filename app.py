@@ -8,6 +8,7 @@
 import contextlib
 import copy
 import glob
+import hashlib
 import io
 import json
 import os
@@ -22,10 +23,10 @@ DEFAULTS = ROOT / "config_default.yaml"
 PRESETS = sorted(p.name for p in ROOT.glob("config*.yaml"))                 # settings presets: every config*.yaml next to the app
 DEFAULT_PRESET = DEFAULTS.name                                                # generic: themes come from the answers; other presets are optional
 APP_RUNS = ROOT / "runs" / "app"
-MIN_SIM, FALLBACK_SIM, EVIDENCE = 0.40, 0.04, 0.60      # matching strictness: fixed defaults, not shown on the page
+MIN_SIM, FALLBACK_SIM, EVIDENCE = 0.40, 0.12, 0.60      # matching strictness: fixed defaults, not shown on the page
 GREEN, YELLOW, RED = "#C6EFCE", "#FFEB9C", "#FFC7CE"
 NOT_THEMES = ("respondent_id", "Answer", "Overall", "Question")      # columns on a question sheet that are not themes
-INTERNAL_SHEETS = {"results", "results_codes", "detail", "pairs", "themes", "timings", "Combined"}
+INTERNAL_SHEETS = {"results", "results_codes", "detail", "pairs", "themes", "timings", "spelling", "Combined"}
 
 st.set_page_config(page_title="Survey themes and sentiment", layout="wide")
 
@@ -155,6 +156,13 @@ def overrides_for(cfg: dict, edits: dict) -> dict:
     return {"themes": {"n_themes": n, "n_total": n, "required": req, "curation": {"ops": ops}}}
 
 
+def settings_sig(cfg: dict, edits: dict) -> str:
+    """Fingerprint of everything that decides WHICH themes are found (not of the merge / rename / remove edits made on them)."""
+    ov = overrides_for(cfg, {**edits, "ops": []})          # without the edits made on the table (they change the list, not the search)
+    ov["themes"] = {k: v for k, v in ov["themes"].items() if k != "curation"}
+    return hashlib.sha1(json.dumps([cfg, ov], sort_keys=True, default=str).encode()).hexdigest()
+
+
 def run_stage(cfg: dict, edits: dict, until: str, force=False):
     """Write the config, run the pipeline up to `until`, show the log live. Returns the stage outputs."""
     run_dir = Path(cfg["run_dir"])
@@ -169,9 +177,13 @@ def run_stage(cfg: dict, edits: dict, until: str, force=False):
                 art = pipeline.run(str(cfg_path), "assign" if until == "themes" else until, force, overrides=overrides_for(cfg, edits))
         except Exception as e:                  # shown as a message on the page instead of crashing the app
             status.update(label="That could not be applied", state="error")
-            raise ValueError(str(e) if isinstance(e, ValueError) else f"{type(e).__name__}: {e}") from e
+            msg = str(e) if isinstance(e, ValueError) else f"{type(e).__name__}: {e}"
+            if "unknown theme" in msg:
+                msg += "  (The table on screen is out of date. Press 'Find themes' again and redo the edit.)"
+            raise ValueError(msg) from e
         status.update(label="Done", state="complete", expanded=False)
     if until == "themes":                       # the table of themes has new rows: give its editor a fresh state
+        st.session_state.art_sig = settings_sig(cfg, edits)
         st.session_state.table_version = st.session_state.get("table_version", 0) + 1
     return art
 
@@ -322,6 +334,13 @@ with tab_themes:
         st.stop()
     edits = st.session_state.edits
     cfg = build_config(s)
+    sig = settings_sig(cfg, edits)
+    if "art" in st.session_state and st.session_state.get("art_sig") != sig:
+        # The table on screen was made with other settings than the ones in force now (a changed number of themes, an added theme,
+        # a new version of the app): edits made on it would name themes the next search does not produce. Search again from scratch.
+        st.session_state.pop("art", None)
+        edits["ops"] = []
+        st.session_state.auto_find = True
 
     go1, go2 = st.columns([1, 3])
     if go1.button("Find themes", type="primary") or "art" not in st.session_state and st.session_state.get("auto_find"):

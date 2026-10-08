@@ -82,7 +82,7 @@ def _name_themes(clauses, merged, c, Ec=None, mu=None, cfg=None):
             name = cands[int(np.argmax(sims))].title()
         elif cands:
             name = cands[0].title()
-        name = name or kws[0].title()
+        name = name or (kws[0] if kws else terms[order[0]]).title()
         used.add(name)
         # Keywords used to MATCH clauses: a term must be common inside the theme and clearly more common there than in
         # the whole survey ("taste" in a taste theme passes; "good", which every theme uses, does not).
@@ -159,8 +159,18 @@ def _curate(themes, merged, c):
         alive = [t["theme_name"] for t in themes if not t.get("_dead")]
         raise ValueError(f"curation refers to unknown theme {n!r}. Themes: {alive}")
 
+    def check_free(name, allowed):
+        """A theme name must stay unique: two themes with one name would share an output column."""
+        for i, t in enumerate(themes):
+            if not t.get("_dead") and i not in allowed and t["theme_name"].lower() == str(name).strip().lower():
+                raise ValueError(f"A theme called {t['theme_name']!r} already exists. Choose another name.")
+
     def merge(new, group):
-        ids = [idx(n) for n in group]
+        ids = list(dict.fromkeys(idx(n) for n in group))      # the same theme named twice counts once
+        if len(ids) < 2:
+            raise ValueError("Pick at least two different themes to merge.")
+        if new:
+            check_free(new, ids)
         keep = ids[0]
         merged[keep] = np.concatenate([merged[i] for i in ids])
         kws = list(dict.fromkeys(k for i in ids for k in themes[i]["keywords"]))
@@ -178,6 +188,7 @@ def _curate(themes, merged, c):
             print(f"WARNING: skipped curation ({what}): {e}")
 
     def set_name(old, new):
+        check_free(new, [idx(old)])
         themes[idx(old)]["theme_name"] = new
 
     def set_keywords(n, kws):
@@ -199,7 +210,7 @@ def _curate(themes, merged, c):
         if kind == "merge":                                  # ["merge", new_name_or_null, [names...]]
             merge(op[1], op[2])
         elif kind == "rename":                               # ["rename", old, new]
-            themes[idx(op[1])]["theme_name"] = op[2]
+            set_name(op[1], op[2])
         elif kind == "drop":                                 # ["drop", name]
             themes[idx(op[1])]["_dead"] = True
     keep = [i for i, t in enumerate(themes) if not t.get("_dead")]
@@ -340,10 +351,7 @@ def discover(clauses, E, cfg):
     n_target = c.get("n_themes") or c.get("max_themes")
     axis = axis_of(cfg)
     Ecl = center(E, mu, 0.0, axis) if axis is not None else E     # clustering space: with a sentiment axis, praise / complaint wording is taken out
-    hand = _hand_made_members(clauses, Ec, mu, c, cfg)
-    pool = np.setdiff1d(ok, hand)                       # what the user's own themes cover is set aside, the rest is clustered
-    if len(pool) < 2 * c["min_cluster_size"]:
-        pool = ok
+    pool = ok                                           # always every clause: the themes found in the answers must not depend on the themes you add
     cc = dict(c)
     merged = _candidates(Ecl, pool, cc, seed)
     while c.get("expand", True) and n_target and len(merged) < n_target and cc["min_cluster_size"] > 4:
@@ -407,9 +415,11 @@ def discover(clauses, E, cfg):
         # themes.n_total = how many themes the output has IN TOTAL (the user's own included). Drop the smallest beyond that: themes
         # found in the data first (the likelier duplicates of a theme the user wrote), then the user's own. The clauses of a dropped
         # theme go to the nearest remaining one when they are assigned.
-        S = Ec @ C.T
-        size = np.bincount(S.argmax(1)[S.max(1) >= floor], minlength=len(themes))
         mine = lambda t: bool(t.get("required") or t.get("seeded"))
+        disc = [j for j, t in enumerate(themes) if not mine(t)]
+        S = Ec @ C[disc].T                              # sizes counted among the found themes only, so adding a theme never changes which one is trimmed
+        size = np.zeros(len(themes), int)
+        size[disc] = np.bincount(S.argmax(1)[S.max(1) >= floor], minlength=len(disc))
         order = sorted(range(len(themes)), key=lambda j: (mine(themes[j]), size[j]))
         gone = set(order[:len(themes) - n_total])
         keep = [j for j in range(len(themes)) if j not in gone]

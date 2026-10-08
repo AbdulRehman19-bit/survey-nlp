@@ -91,3 +91,22 @@ def test_cli_keeps_required_themes_from_the_config_unless_the_user_chose_some():
     assert "required" not in _overrides(cfg, _empty())["themes"]
     e = {**_empty(), "required": [{"name": "Price"}]}
     assert _overrides(cfg, e)["themes"]["required"] == [{"name": "Price"}]
+
+
+def test_merge_and_rename_keep_theme_names_unique_and_need_two_different_themes():
+    import numpy as np
+    import pytest
+    from survey_nlp.themes import _curate
+    c = {"min_themes": 2, "n_keywords": 8}
+
+    def mk():
+        th = [{"theme_name": n, "keywords": [], "frequency": 1} for n in ("A", "B", "C")]
+        return th, [np.array([i]) for i in range(3)]
+
+    for ops in ([["merge", "C", ["A", "B"]]], [["rename", "A", "c"]], [["merge", None, ["A", "A"]]]):
+        th, m = mk()
+        with pytest.raises(ValueError):
+            _curate(th, m, dict(c, curation={"ops": ops}))
+    th, m = mk()
+    out, _ = _curate(th, m, dict(c, curation={"ops": [["merge", "A", ["A", "B"]]]}))      # keeping one of its own names is fine
+    assert [t["theme_name"] for t in out] == ["A", "C"]

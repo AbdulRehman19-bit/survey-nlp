@@ -104,3 +104,4 @@ def test_theme_name_word_matches_by_keyword_but_a_shared_name_word_does_not():
     out = run(clauses, E, themes, C, cfg)
     assert out[out.clause_id == 0].theme_idx.tolist() == [0]                   # "refreshing" is in the name of theme 0
     assert out[out.clause_id == 1].theme_idx.tolist() == [1]                   # "taste" belongs to the theme called Taste, not to Refreshing Taste
+

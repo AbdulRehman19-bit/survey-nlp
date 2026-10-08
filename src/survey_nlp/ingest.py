@@ -1,4 +1,7 @@
+import json
 import re
+from collections import Counter
+from pathlib import Path
 import pandas as pd
 from .util import sha
 
@@ -85,6 +88,32 @@ def _drop_id_row(df: pd.DataFrame, text_cols: list) -> pd.DataFrame:
     return df
 
 
+def _spelling(clean: pd.Series, cfg, c: dict) -> pd.Series:
+    """Repair typos in the text the models read ("artifical" -> "artificial"). The answer shown in the results stays as it was written.
+    Words from your own theme names and keywords are never changed. The changes are listed in <run_dir>/spelling_corrections.json."""
+    from . import spelling
+    t = cfg["themes"] if "themes" in cfg.raw else {}
+    protect = set()
+    for r in t.get("required") or []:
+        r = {"name": r} if isinstance(r, str) else r
+        protect |= set(re.findall(r"[A-Za-z']{3,}", " ".join([r.get("name", "")] + list(r.get("keywords") or []))))
+    for kws in ((t.get("curation") or {}).get("extra_keywords") or {}).values():
+        protect |= set(re.findall(r"[A-Za-z']{3,}", " ".join(kws)))
+    uniq = clean[clean.str.len() > 0].drop_duplicates().tolist()
+    fixes = spelling.find_corrections(uniq, c, protect)
+    rd = Path(cfg["run_dir"])
+    rd.mkdir(parents=True, exist_ok=True)
+    if not fixes:
+        (rd / "spelling_corrections.json").write_text("[]")
+        return clean
+    pat = re.compile(r"[A-Za-z][A-Za-z]*(?:['’][A-Za-z]+)?")
+    times = Counter(w.lower() for s in clean for w in pat.findall(s) if w.lower() in fixes)
+    (rd / "spelling_corrections.json").write_text(json.dumps(
+        [{"word": w, "correction": v, "times": times.get(w, 0)} for w, v in sorted(fixes.items())], indent=1))
+    print(f"Spelling: {len(fixes)} misspelt words repaired in {sum(times.values())} places")
+    return clean.map(lambda s: spelling.apply_corrections(s, fixes))
+
+
 def run(cfg):
     c = dict(cfg["input"])
     df = read_table(c)
@@ -132,6 +161,8 @@ def run(cfg):
     # An apostrophe lost to a bad text encoding in the export shows up as U+FFFD ("don?t"). Restore it so words stay whole.
     clean = (long.text.fillna("").astype(str).str.replace("�", "'", regex=False)
              .str.replace(r"\s+", " ", regex=True).str.strip())
+    if c.get("spell_correct", True):
+        clean = _spelling(clean, cfg, c)
     valid = clean.str.len() >= c["min_chars"]
     if c.get("non_answer_regex"):
         valid &= ~clean.str.lower().str.fullmatch(c["non_answer_regex"])
