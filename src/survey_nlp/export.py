@@ -8,7 +8,7 @@ from openpyxl.utils import get_column_letter
 from . import sentiment
 from .util import is_spec
 
-NO_THEME = "No theme"                                      # permanent column: answers that fit no theme
+COMBINED = "Combined"                                      # sheet with every question's answers one under the other
 GREEN, RED, YELLOW ="C6EFCE", "FFC7CE", "FFEB9C"          # positive / negative / neutral cell colours
 
 
@@ -212,12 +212,6 @@ def run(art, cfg, timings):
                     d["code"] = d["code"].where(~((d["code"] == opp_) & (p_opp_ < pol["themes_opposite_min_conf"])), P)
             d["code"] = d["code"].where(~d["row_id"].map(lw).fillna(False).astype(bool), codes["neutral"])
             detail_rows.append(d[["row_id", "respondent_id", "question", "theme", "p_pos", "p_neg", "p_neu", "mixed", "model_code", "code", "lex_fix"]])
-        # permanent column: a real answer that fell in none of the themes (right after Overall, whatever the themes are)
-        valid_row = out.row_id.map(Lq["valid"]).fillna(False).astype(bool) & out[name].notna()
-        nt = f"{pre}{NO_THEME}"
-        no_theme = valid_row & (out[theme_cols].isna().all(axis=1) if theme_cols else True)
-        out[nt] = no_theme.map({True: "Yes", False: None})
-        qcols[name].insert(2 if o["include_overall"] else 1, (nt, NO_THEME))
 
     detail = pd.concat(detail_rows, ignore_index=True) if detail_rows else pd.DataFrame()
     pairs = art["absa"][["text_key", "scope", "theme", "clause", "sim", "via", "p_neg", "p_neu", "p_pos"]]
@@ -228,8 +222,6 @@ def run(art, cfg, timings):
         inv = {codes[k]: v for k, v in o["labels"].items()}
         words = out.copy()
         for col in out.columns:
-            if col.endswith(NO_THEME):
-                continue
             if col.endswith("Overall") or col in {t["theme_name"] for ts, _ in T.values() for t in ts}                     or (multi and " | " in col):
                 words[col] = out[col].map(lambda v: inv.get(v) if pd.notna(v) else None)
     path = rd / "aspect_sentiment_results.xlsx"
@@ -245,7 +237,7 @@ def run(art, cfg, timings):
              label.get(codes["neutral"], codes["neutral"]): YELLOW}
     colour_of = lambda v: shade.get(v) if isinstance(v, (str, int)) and not isinstance(v, bool) else None
     other = [c for c in base.columns if c != "row_id"]                       # respondent id + keep_cols
-    reserved = {"results", "results_codes", "detail", "pairs", "themes", "timings"}
+    reserved = {"results", "results_codes", "detail", "pairs", "themes", "timings", COMBINED.lower()}
 
     def sheet_name(n):
         n = "".join(ch for ch in n if ch not in '[]:*?/\\')[:31] or "Question"     # characters Excel forbids in sheet names
@@ -256,16 +248,24 @@ def run(art, cfg, timings):
     except KeyError:
         long_mode = False
     with pd.ExcelWriter(path, engine="openpyxl") as xw:
+        stacked = []
         for name, cols in qcols.items():                                    # one sheet per open-ended question
             qdf = words[other + [c for c, _ in cols]].copy()
             qdf.columns = other + [h for _, h in cols]
             if long_mode:
                 qdf = qdf[qdf["Answer"].notna()]                            # only this question's own rows
+            stacked.append(qdf[qdf["Answer"].notna()].assign(Question=name))
             sn = sheet_name(name)
             qdf.to_excel(xw, sheet_name=sn, index=False)
             ws = xw.sheets[sn]
             _style(ws, lambda h: 60 if h == "Answer" else 14)
             _colour(ws, colour_of)
+        if len(stacked) > 1:                                                # all questions one under the other (Likes and Dislikes together)
+            comb = pd.concat(stacked, ignore_index=True)
+            comb = comb[other + ["Question"] + [c for c in comb.columns if c not in other + ["Question"]]]
+            comb.to_excel(xw, sheet_name=COMBINED, index=False)
+            _style(xw.sheets[COMBINED], lambda h: 60 if h == "Answer" else 14)
+            _colour(xw.sheets[COMBINED], colour_of)
         if not long_mode:                                                   # side-by-side only makes sense when respondents answer every question
             words.to_excel(xw, sheet_name="results", index=False)
             _style(xw.sheets["results"], lambda h: 50 if h in qcols else 16)

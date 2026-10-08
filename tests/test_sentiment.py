@@ -93,6 +93,13 @@ def test_negated_negative_word_is_positive_and_negated_positive_is_negative():
     assert neg.tolist() == [False, False, False, False, False, False, True, True, False, True]
 
 
+def test_less_and_lack_turn_a_word_into_its_opposite():
+    from survey_nlp.sentiment import evaluative
+    pos, neg = evaluative(["It feels less good than others", "It is less artificial than others", "It lacks good flavour", "It is good"], V)
+    assert neg.tolist() == [True, False, True, False]                    # "less good", "lacks good": a shortfall
+    assert pos.tolist() == [False, True, False, True]                    # "less artificial": better than the rest
+
+
 def test_negation_reach_stops_at_a_comma_or_a_long_gap():
     from survey_nlp.sentiment import evaluative
     pos, neg = evaluative(["I don't like that it's artificial", "not tasty and artificial"], V)

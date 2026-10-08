@@ -72,7 +72,8 @@ def decide(p_pos, p_neg, threshold, allowance):
 
 _WORD = re.compile(r"[a-z']{3,}")
 _TOK = re.compile(r"[a-z']+|[,;.:!?()]")
-_NEGATORS = {"not", "no", "never", "without", "zero", "hardly", "barely", "nothing", "neither", "nor", "cannot"}
+_NEGATORS = {"not", "no", "never", "without", "zero", "hardly", "barely", "nothing", "neither", "nor", "cannot",
+              "less", "lack", "lacks", "lacking", "fewer"}      # "less refreshing" is the opposite of "refreshing", "less artificial" of "artificial"
 _NEG_STOP = {"and", "but", "because", "while", "although", "though", "however", "yet", "or"}   # the negation does not reach past these
 _NEG_NOT_NEGATING = {"doubt", "only"}                                                         # "no doubt", "not only"
 _NEG_WINDOW = 3                                                                               # "not so / too / as / overly X": up to 3 words back

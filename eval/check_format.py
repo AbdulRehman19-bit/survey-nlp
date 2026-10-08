@@ -2,15 +2,15 @@
 
     python eval/check_format.py --old runs/old_open_ends/aspect_sentiment_results.xlsx --new runs/beverage/aspect_sentiment_results.xlsx
 
-Asserts: same sheet names in the same order; on the question sheets the same leading columns (id, Answer, Overall, No theme) at the same
-positions; cell values only Positive / Negative / Neutral / blank (0/1/2 on results_codes, Yes / blank in No theme); same header style,
+Asserts: same sheet names in the same order; on the question sheets the same leading columns (id, Answer, Overall) at the same
+positions; cell values only Positive / Negative / Neutral / blank (0/1/2 on results_codes, blank otherwise); same header style,
 freeze panes, column widths and cell colours. Prints the sheet / column name differences.
 """
 import argparse
 import openpyxl
 
 WORDS = {"Positive": "C6EFCE", "Negative": "FFC7CE", "Neutral": "FFEB9C"}
-FIXED = ["Answer", "Overall", "No theme"]
+FIXED = ["Answer", "Overall"]
 SKIP_SHEETS = {"detail", "pairs", "themes", "timings"}          # tables, not result sheets
 
 
@@ -25,9 +25,10 @@ def main():
     ap.add_argument("--new", required=True)
     a = ap.parse_args()
     old, new = openpyxl.load_workbook(a.old), openpyxl.load_workbook(a.new)
-    assert old.sheetnames == new.sheetnames, f"sheet names differ: {old.sheetnames} vs {new.sheetnames}"
-    print("sheet names identical:", new.sheetnames)
-    for name in new.sheetnames:
+    names = lambda wb: [n for n in wb.sheetnames if n != "Combined"]          # the Combined sheet is new: not part of the old format
+    assert names(old) == names(new), f"sheet names differ: {names(old)} vs {names(new)}"
+    print("sheet names identical:", names(new))
+    for name in names(new):
         wo, wn = old[name], new[name]
         ho, hn = [c.value for c in wo[1]], [c.value for c in wn[1]]
         gone, added = [h for h in ho if h not in hn], [h for h in hn if h not in ho]
@@ -40,7 +41,7 @@ def main():
             continue
         for h in ["respondent_id"] + FIXED if "respondent_id" in ho else FIXED:        # same position of the fixed columns
             assert ho.index(h) == hn.index(h), f"[{name}] column {h!r} moved: {ho.index(h)} -> {hn.index(h)}"
-        lead = ho.index("No theme") + 1
+        lead = ho.index("Overall") + 1
         assert ho[:lead] == hn[:lead], f"[{name}] leading columns differ: {ho[:lead]} vs {hn[:lead]}"
         # vocabulary
         seen = set()
@@ -48,13 +49,13 @@ def main():
             if h in ("respondent_id", "Answer"):
                 continue
             vals = {wn.cell(r, j).value for r in range(2, wn.max_row + 1)}
-            allowed = ({"Yes", None} if h == "No theme" else {*WORDS, None})
+            allowed = {*WORDS, None}
             assert vals <= allowed, f"[{name}] column {h!r} has unexpected values {vals - allowed}"
             seen |= vals
         print("   cell vocabulary:", sorted(v for v in seen if v))
         # styles: header, freeze panes, widths, colours, wrap
         assert wo.freeze_panes == wn.freeze_panes, "freeze panes differ"
-        for h in ["Answer", "Overall", "No theme"]:
+        for h in ["Answer", "Overall"]:
             assert wo.column_dimensions[openpyxl.utils.get_column_letter(ho.index(h) + 1)].width == \
                 wn.column_dimensions[openpyxl.utils.get_column_letter(hn.index(h) + 1)].width, f"width of {h} differs"
         assert style_sig(wo.cell(1, 1)) == style_sig(wn.cell(1, 1)), "header style differs"

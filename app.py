@@ -22,10 +22,10 @@ DEFAULTS = ROOT / "config_default.yaml"
 PRESETS = sorted(p.name for p in ROOT.glob("config*.yaml"))                 # settings presets: every config*.yaml next to the app
 DEFAULT_PRESET = DEFAULTS.name                                                # generic: themes come from the answers; other presets are optional
 APP_RUNS = ROOT / "runs" / "app"
-MIN_SIM, FALLBACK_SIM, EVIDENCE = 0.40, 0.30, 0.60      # matching strictness: fixed defaults, not shown on the page
+MIN_SIM, FALLBACK_SIM, EVIDENCE = 0.40, 0.04, 0.60      # matching strictness: fixed defaults, not shown on the page
 GREEN, YELLOW, RED = "#C6EFCE", "#FFEB9C", "#FFC7CE"
-NOT_THEMES = ("respondent_id", "Answer", "Overall", "No theme")      # columns on a question sheet that are not themes
-INTERNAL_SHEETS = {"results", "results_codes", "detail", "pairs", "themes", "timings"}
+NOT_THEMES = ("respondent_id", "Answer", "Overall", "Question")      # columns on a question sheet that are not themes
+INTERNAL_SHEETS = {"results", "results_codes", "detail", "pairs", "themes", "timings", "Combined"}
 
 st.set_page_config(page_title="Survey themes and sentiment", layout="wide")
 
@@ -99,6 +99,11 @@ def polarity_choice(entry) -> str:
     return {"positive": "Positive (a 'like' question)", "negative": "Negative (a 'dislike' question)"}.get(entry.get("neutral_as"), "Auto")
 
 
+def n_general(cfg: dict) -> int:
+    """Built-in 'not specific' themes (general: true, e.g. General comment). They come on top of the number the user chooses."""
+    return sum(1 for r in (cfg["themes"].get("required") or []) if isinstance(r, dict) and r.get("general"))
+
+
 def build_config(s: dict) -> dict:
     """The chosen settings preset (a config*.yaml) + whatever the user chose on the Data step."""
     cfg = load_preset(s["preset"])
@@ -114,7 +119,7 @@ def build_config(s: dict) -> dict:
     cfg["assign"].setdefault("min_sim", s["min_sim"])                  # the preset's values win; these are only fallbacks
     cfg["assign"].setdefault("fallback_min_sim", s["fallback"])
     cfg["absa"].setdefault("evidence_threshold", s["evidence"])
-    cfg["themes"]["n_themes"] = cfg["themes"]["n_total"] = s["edits"]["n_themes"]      # the number chosen is the total, fixed themes included
+    cfg["themes"]["n_themes"] = cfg["themes"]["n_total"] = s["edits"]["n_themes"] + n_general(cfg)   # the number chosen, plus the general-comment theme on top
     base = dict(cfg["output"].get("question_polarity") or {})           # the preset's own choices (with their finer settings) stay
     pol = {}
     for q, choice in s["polarity"].items():
@@ -146,7 +151,8 @@ def overrides_for(cfg: dict, edits: dict) -> dict:
             req.remove(hit[0])
         else:
             hit[0]["name"] = op[2]
-    return {"themes": {"n_themes": edits["n_themes"], "required": req, "curation": {"ops": ops}}}
+    n = edits["n_themes"] + n_general(cfg)
+    return {"themes": {"n_themes": n, "n_total": n, "required": req, "curation": {"ops": ops}}}
 
 
 def run_stage(cfg: dict, edits: dict, until: str, force=False):
@@ -159,7 +165,8 @@ def run_stage(cfg: dict, edits: dict, until: str, force=False):
         log = LiveLog(st.empty())
         try:
             with contextlib.redirect_stdout(log):
-                art = pipeline.run(str(cfg_path), until, force, overrides=overrides_for(cfg, edits))
+                # for the themes step also run assign (it takes a moment): the table then shows how often each theme really occurs
+                art = pipeline.run(str(cfg_path), "assign" if until == "themes" else until, force, overrides=overrides_for(cfg, edits))
         except Exception as e:                  # shown as a message on the page instead of crashing the app
             status.update(label="That could not be applied", state="error")
             raise ValueError(str(e) if isinstance(e, ValueError) else f"{type(e).__name__}: {e}") from e
@@ -171,9 +178,14 @@ def run_stage(cfg: dict, edits: dict, until: str, force=False):
 
 def themes_table(art) -> pd.DataFrame:
     rows = []
+    ans = {}                                            # (scope, theme index) -> different answers the theme was assigned to
+    if "assign" in art:
+        a = art["assign"].merge(art["segment"][["clause_id", "text_key"]], on="clause_id")
+        ans = a.groupby(["scope", "theme_idx"]).text_key.nunique().to_dict()
     for scope, (themes, _) in art["themes"].items():
-        for t in themes:
-            rows.append({"Keep": True, "Theme": t["theme_name"], "Clauses": t["frequency"] or None,
+        for j, t in enumerate(themes):
+            rows.append({"Keep": True, "Theme": t["theme_name"],
+                         "Answers": ans.get((scope, j), 0) if ans else (t["frequency"] or None),
                          "Main words": ", ".join((t.get("curated_keywords") or t["keywords"])[:6]), "_orig": t["theme_name"]})
     return pd.DataFrame(rows)
 
@@ -262,28 +274,30 @@ with tab_data:
         st.stop()
 
     st.subheader("Settings")
-    s1, s2 = st.columns(2)
+    s1 = st.container()
     preset_name = DEFAULTS.name                                         # built-in settings: nothing to choose, everything is automatic
     preset = load_preset(preset_name)
     fixed = [r["name"] if isinstance(r, dict) else r for r in (preset["themes"].get("required") or [])]
     if "edits" not in st.session_state:
-        st.session_state.edits = {**empty_edits(), "n_themes": max(preset["themes"].get("n_themes") or 10, len(fixed))}
+        st.session_state.edits = {**empty_edits(), "n_themes": preset["themes"].get("n_themes") or 10}
     edits = ss("edits", empty_edits())
-    n_themes = s1.slider("How many themes in total", 2, max(30, len(fixed) + 10), edits["n_themes"],
-                         help="The built-in general-comment theme and the themes you add count too. If there are more, the smallest ones are "
-                              "dropped (themes found in the answers first). A 'No theme' column is always added on top.")
+    if "n_slider" not in st.session_state:
+        st.session_state.n_slider = st.session_state.n_box = edits["n_themes"]
+    s1.write("**How many themes**")
+    sl, bx = s1.columns([3, 1])
+    sl.slider("Themes (slider)", 2, 30, key="n_slider", label_visibility="collapsed",
+              on_change=lambda: st.session_state.update(n_box=st.session_state.n_slider),
+              help="Drag the slider or type a number in the box. The built-in general-comment theme ('not specified') is added on top of "
+                   "this number, so 10 gives 10 themes + 1. Themes you add yourself count inside the number.")
+    bx.number_input("Themes (type)", 2, 100, key="n_box", label_visibility="collapsed",
+                    on_change=lambda: st.session_state.update(n_slider=min(30, st.session_state.n_box)))
+    n_themes = int(st.session_state.n_box)
+    s1.caption(f"{n_themes} themes + {n_general(preset)} general-comment theme for remarks that name no topic.")
     req_text = s1.text_area("Extra themes that must be included (one per line, optional words after a colon)",
                             value="\n".join(r["name"] + (": " + ", ".join(r["keywords"]) if r.get("keywords") else "")
                                             for r in edits["required"]),
                             placeholder="Price: cost, expensive, cheap\nPackaging", height=110)
-    short = export.short_names(questions)
-    s2.write("**What does each question ask?** A bare mention is read as praise or as a complaint.")
-    polarity = {}
-    choices = ["Auto", "Positive (a 'like' question)", "Negative (a 'dislike' question)", "None"]
-    preset_pol = preset["output"].get("question_polarity") or {}
-    for q in questions:
-        polarity[short[q]] = s2.selectbox(f"{short[q]}", choices, index=choices.index(polarity_choice(preset_pol.get(short[q]))),
-                                          key=f"pol_{q}_{preset_name}")
+    polarity = {}           # no per-question choice on the page: what each question asks is always read from the answers (output.auto_polarity)
 
     new_required = parse_required(req_text)
     if n_themes != edits["n_themes"] or new_required != edits["required"]:
@@ -315,7 +329,15 @@ with tab_themes:
         try:
             st.session_state.art = run_stage(cfg, edits, "themes")
         except ValueError as e:
-            st.error(str(e))
+            if edits["ops"]:            # edits typed earlier name themes that this search did not produce: start them again, never get stuck
+                edits["ops"] = []
+                try:
+                    st.session_state.art = run_stage(cfg, edits, "themes")
+                    st.warning(f"Earlier merge / rename / remove edits no longer matched the themes found now, so they were cleared. ({e})")
+                except ValueError as e2:
+                    st.error(str(e2))
+            else:
+                st.error(str(e))
     go2.caption("Themes are found from the answers themselves. Edit them below, then run the analysis.")
 
     art = st.session_state.get("art")
@@ -336,7 +358,8 @@ with tab_themes:
             table.drop(columns="_orig"), key=f"theme_table_{st.session_state.get('table_version', 0)}", hide_index=True, width="stretch",
             column_config={"Keep": st.column_config.CheckboxColumn("Keep", width="small"),
                            "Theme": st.column_config.TextColumn("Theme (click to rename)"),
-                           "Clauses": st.column_config.NumberColumn("Answers in theme", disabled=True),
+                           "Answers": st.column_config.NumberColumn("Answers", disabled=True,
+                                                                    help="How many different answers were assigned to this theme"),
                            "Main words": st.column_config.TextColumn("Main words", disabled=True)})
 
         e1, e2, e3 = st.columns(3)
@@ -363,14 +386,21 @@ with tab_themes:
             names = list(table["Theme"])
             pick = st.multiselect("Themes to merge", names, key="merge_pick")
             merged_name = st.text_input("Name of the merged theme", key="merge_name")
-            if st.button("Merge") and len(pick) >= 2:
-                edits["ops"].append(["merge", merged_name.strip() or None, pick])
-                try:
-                    st.session_state.art = run_stage(cfg, edits, "themes")
-                    st.rerun()
-                except ValueError as e:
-                    edits["ops"].pop()
-                    st.error(str(e))
+            if st.button("Merge"):
+                built_in = {t["theme_name"] for t in all_themes if t.get("required") or t.get("seeded")}
+                if len(pick) < 2:
+                    st.warning("Pick at least two themes to merge.")
+                elif built_in & set(pick):
+                    st.warning("Built-in and added themes ({}) cannot be merged. Merge themes found in the answers, or untick Keep to remove one."
+                               .format(", ".join(sorted(built_in & set(pick)))))
+                else:
+                    edits["ops"].append(["merge", merged_name.strip() or None, pick])
+                    try:
+                        st.session_state.art = run_stage(cfg, edits, "themes")
+                        st.rerun()
+                    except ValueError as e:
+                        edits["ops"].pop()
+                        st.error(str(e))
         with e3:
             st.markdown("**Add a theme**")
             add_name = st.text_input("Theme name", key="add_name")

@@ -7,7 +7,7 @@ from scipy.sparse.csgraph import connected_components
 from sklearn.cluster import HDBSCAN, AgglomerativeClustering
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics import silhouette_score
-from .util import center, sha
+from .util import axis_of, center, sha
 
 
 def _unit(v):
@@ -54,24 +54,31 @@ def _name_themes(clauses, merged, c, Ec=None, mu=None, cfg=None):
         kws = terms[order[:c["n_keywords"]]].tolist()
         name = None
         texts = clauses["clause"].iloc[m].str.lower()
-        cands = []
-        for t in terms[order[:40]]:                                 # POS-guarded: head must be a noun
-            if len(t) < 4 or texts.str.contains(t, regex=False).mean() < c.get("name_min_share", 0.08):
+        cands, share = [], []
+        for t in terms[order[:40]]:                                 # head must be a noun, or a plain one-word adjective ("sweet", "fizzy")
+            sh = texts.str.contains(t, regex=False).mean()
+            if len(t) < 4 or sh < c.get("name_min_share", 0.12):
                 continue                                            # fragments ("don") and words few clauses in the cluster use
             last = nlp(t)[-1]
-            if last.pos_ in ("NOUN", "PROPN") and t.title() not in used:
+            adj = last.pos_ == "ADJ" and " " not in t and c.get("name_adjectives", True)
+            if (last.pos_ in ("NOUN", "PROPN") or adj) and t.title() not in used:
                 cands.append(t)
+                share.append(sh)
                 if len(cands) >= c.get("name_candidates", 8):
                     break
         name = None
         if cands and Ec is not None and cfg is not None and c.get("name_by_meaning", True):
-            # Of the good-looking words, pick the one whose MEANING is closest to this theme's centre, so a theme about
-            # "tastes nice / fruity / refreshing" is not named after one flavour that happens to be frequent.
+            # Of the good-looking words, prefer the one that most clauses of the theme use AND whose MEANING is closest to the
+            # theme's centre, so a theme about "tastes nice / fruity / refreshing" is not named after one flavour that is frequent
+            # or after a word one clause happens to use. An evaluation word ("good", "nice") is never a name.
             from . import embed
-            V = embed.encode_cached([sha("name:" + t) for t in cands], cands, cfg)
-            V = center(V, mu, c.get("center_strength", 1.0)) if c.get("center") else V
+            V0 = embed.encode_cached([sha("name:" + t) for t in cands], cands, cfg)
+            V = center(V0, mu, c.get("center_strength", 1.0), axis_of(cfg)) if c.get("center") else V0
             centre = _unit(Ec[m].mean(0))
-            sims = V @ centre - 0.01 * np.arange(len(cands))        # tiny preference for the better c-TF-IDF rank
+            sims = V @ centre + c.get("name_share_weight", 0.5) * np.array(share) - 0.01 * np.arange(len(cands))
+            ax = axis_of(cfg)
+            if ax is not None:
+                sims = sims - 1.0 * (np.abs(V0 @ ax) >= c.get("name_eval_max", 0.35))
             name = cands[int(np.argmax(sims))].title()
         elif cands:
             name = cands[0].title()
@@ -201,7 +208,7 @@ def _curate(themes, merged, c):
     return [themes[i] for i in keep], [merged[i] for i in keep]
 
 
-def _expand(vec, Ec, clauses, c, words=()):
+def _expand(vec, Ec, clauses, c, words=(), cfg=None, mu=None):
     """A theme the user only named: find the clauses that mean the same thing (or use its words), pull the centre towards
     them, repeat so paraphrases are found too, and learn the words they use that the rest of the survey does not.
     Returns (centre, keywords, members); members are indices into `clauses`."""
@@ -236,8 +243,20 @@ def _expand(vec, Ec, clauses, c, words=()):
     share_in, share_all = n_in / len(m), n_all / X.shape[0]
     good = (n_in >= 2) & (share_in >= c.get("keyword_min_share", 0.10)) & (share_in >= c.get("required_min_lift", 4.0) * share_all) & (share_all <= c.get("required_max_share_all", 0.05))
     rank = np.argsort(-(share_in * share_in / np.maximum(share_all, 1e-9)) * good)
-    kws = [terms[i] for i in rank[:c.get("n_keywords", 8)] if good[i]]
-    return centre, kws, m
+    n_kw = c.get("n_keywords", 8)
+    kws = [terms[i] for i in rank[:3 * n_kw] if good[i]]
+    if kws and cfg is not None and mu is not None:
+        # A frequent word is not a good keyword just because it sits in the theme's clauses ("favourite", "good" in a Price theme).
+        # Keep a word only if its own MEANING is close to the theme's centre and it is not a plain evaluation word.
+        from . import embed
+        V0 = embed.encode_cached([sha("name:" + k) for k in kws], kws, cfg)
+        ax = axis_of(cfg)
+        V = center(V0, mu, c.get("center_strength", 1.0), ax) if c.get("center") else V0
+        ok = (V @ centre) >= c.get("required_kw_min_sim", 0.35)
+        if ax is not None:
+            ok &= np.abs(V0 @ ax) < c.get("name_eval_max", 0.35)
+        kws = [k for k, o in zip(kws, ok) if o]
+    return centre, kws[:n_kw], m
 
 
 def _auto_seeds(name):
@@ -259,9 +278,9 @@ def _apply_required(themes, C, mu, c, cfg, Ec=None, clauses=None):
         kws = [] if sem_only else list(r.get("keywords") or re.findall(r"[A-Za-z']{3,}", name.lower()))
         seeds = list(r.get("seeds") or _auto_seeds(name))
         V = embed.encode_cached([sha("seed:" + x.lower()) for x in seeds], seeds, cfg)
-        V = center(V, mu, c.get("center_strength", 1.0)) if c.get("center") else V
+        V = center(V, mu, c.get("center_strength", 1.0), axis_of(cfg)) if c.get("center") else V
         vec = _unit(V.mean(0)).astype(np.float32)
-        vec, learned, members = _expand(vec, Ec, clauses, c, words=kws)
+        vec, learned, members = _expand(vec, Ec, clauses, c, words=kws, cfg=cfg, mu=mu)
         n_mem = len(members)
         # words learned from the data are frequent words that happen to sit in the theme's clauses ("bitter", "weak" for a
         # theme about aftertaste); themes.learn_keywords: false keeps only the words the user wrote
@@ -301,8 +320,8 @@ def _hand_made_members(clauses, Ec, mu, c, cfg):
     found = [np.array([], int)]
     for seeds, words in specs:
         V = embed.encode_cached([sha("seed:" + x.lower()) for x in seeds], seeds, cfg)
-        V = center(V, mu, c.get("center_strength", 1.0)) if c.get("center") else V
-        found.append(_expand(_unit(V.mean(0)).astype(np.float32), Ec, clauses, c, words=words)[2])
+        V = center(V, mu, c.get("center_strength", 1.0), axis_of(cfg)) if c.get("center") else V
+        found.append(_expand(_unit(V.mean(0)).astype(np.float32), Ec, clauses, c, words=words, cfg=cfg, mu=mu)[2])
     return np.unique(np.concatenate(found))
 
 
@@ -317,19 +336,21 @@ def discover(clauses, E, cfg):
         raise ValueError(f"Only {len(ok)} usable clauses; too few for theme discovery. "
                          "Use themes.scope: pooled or lower themes.min_cluster_size.")
     mu = E.mean(0, keepdims=True)
-    Ec = center(E, mu, c.get("center_strength", 1.0)) if c.get("center") else E        # centroids live in the same space assign.run scores in
+    Ec = center(E, mu, c.get("center_strength", 1.0), axis_of(cfg)) if c.get("center") else E        # centroids live in the same space assign.run scores in
     n_target = c.get("n_themes") or c.get("max_themes")
+    axis = axis_of(cfg)
+    Ecl = center(E, mu, 0.0, axis) if axis is not None else E     # clustering space: with a sentiment axis, praise / complaint wording is taken out
     hand = _hand_made_members(clauses, Ec, mu, c, cfg)
     pool = np.setdiff1d(ok, hand)                       # what the user's own themes cover is set aside, the rest is clustered
     if len(pool) < 2 * c["min_cluster_size"]:
         pool = ok
     cc = dict(c)
-    merged = _candidates(E, pool, cc, seed)
+    merged = _candidates(Ecl, pool, cc, seed)
     while c.get("expand", True) and n_target and len(merged) < n_target and cc["min_cluster_size"] > 4:
         # fewer candidates than requested: look for smaller topics before giving up
         cc = dict(cc, min_cluster_size=max(4, cc["min_cluster_size"] - 2), min_samples=max(2, cc["min_samples"] - 1),
                   min_cluster_frac=0)
-        merged = _candidates(E, pool, cc, seed)
+        merged = _candidates(Ecl, pool, cc, seed)
     n_found = len(merged)
     merged = _reduce(merged, Ec, n_target)
     if len(merged) < c["min_themes"]:
@@ -346,7 +367,7 @@ def discover(clauses, E, cfg):
         if name not in names:
             raise ValueError(f"curation.seeds refers to unknown theme {name!r}. Themes: {names}")
         V = embed.encode_cached([sha("seed:" + x.lower()) for x in seeds], seeds, cfg)
-        V = center(V, mu, c.get("center_strength", 1.0)) if c.get("center") else V
+        V = center(V, mu, c.get("center_strength", 1.0), axis_of(cfg)) if c.get("center") else V
         j = names.index(name)
         C[j] = _unit(C[j] + _unit(V.mean(0)))
     extra = []
@@ -355,9 +376,9 @@ def discover(clauses, E, cfg):
         from . import embed
         seeds = spec["seeds"]
         V = embed.encode_cached([sha("seed:" + x.lower()) for x in seeds], seeds, cfg)
-        V = center(V, mu, c.get("center_strength", 1.0)) if c.get("center") else V
+        V = center(V, mu, c.get("center_strength", 1.0), axis_of(cfg)) if c.get("center") else V
         words = list(spec.get("keywords", [])) or re.findall(r"[A-Za-z']{3,}", name.lower())
-        centre, learned, members = _expand(_unit(V.mean(0)).astype(np.float32), Ec, clauses, c, words=words)
+        centre, learned, members = _expand(_unit(V.mean(0)).astype(np.float32), Ec, clauses, c, words=words, cfg=cfg, mu=mu)
         n_mem = len(members)
         kws = list(dict.fromkeys(list(spec.get("keywords", [])) + learned))
         have = [i for i, t in enumerate(themes) if t["theme_name"].lower() == name.lower()]

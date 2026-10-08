@@ -79,6 +79,10 @@ themes:
     - No good
   split_large_frac: 0.3
   n_themes: 10
+  sentiment_axis:                 # take the positive-vs-negative direction out of the embeddings so themes form by TOPIC, not by tone
+    positive: [It is good, I love it, I really like it, It is great, It is excellent, Very nice]
+    negative: [It is bad, I hate it, I really dislike it, It is terrible, It is awful, Very unpleasant]
+  required_kw_min_sim: 0.35       # a word learned for a theme you added must be this close in meaning to the theme (drops 'good', 'favourite' from Price)
   required_merge_cos: 0.95        # a built-in theme is added as its own theme, never renames a discovered one
 assign:
   min_sim: 0.4
@@ -86,7 +90,7 @@ assign:
   keyword_min_len: 3
   center: true
   keyword_min_precision: 0.5
-  fallback_min_sim: 0.3
+  fallback_min_sim: 0.04
   max_themes_per_clause: 2
   use_discovered_keywords: false
   general_min_sim: 0.9          # a clause this close in meaning to a general comment below is left without a theme
@@ -129,9 +133,11 @@ output:
   # General English, not tied to any survey. Edit or extend for your language / topic.
   # A remark that is a complaint by itself: in a question that asks for praise the answer is rated Negative. 'not too sweet' is not one.
   complaint_phrases:
-  - (?<!not )(?<!n't )(?<!no )(?<!as )\btoo\s+\w+
+  - (?<!not )(?<!n't )(?<!no )(?<!as )(?<!without being )(?<!never )(?<!not be )\btoo\s+\w+
   - \bnot\s+(?:\w+\s+){0,2}enough\b
   - \b(?:lacks?|lacking|lack of|insufficient|too little|could be better)\b
+  # A hedged remark ("a bit sweet", "slightly flat") is a mild complaint when the question asks for praise, unless the answer also says something good or has a but/though.
+  - '^(?!.*\b(?:but|though|although|however|yet|nice|good|great|better|love|lovely|like|enjoy\w*|refreshing|pleasant|smooth|tasty|delicious|energi\w+)\b).*\b(?:a bit|a little|slightly|somewhat|bit)\s+(?!too\b)\w+'
   # Lukewarm wording: with no clearly positive or negative word left over, the answer is rated Neutral.
   neutral_phrases:
   - \b(?:ok|okay)\b

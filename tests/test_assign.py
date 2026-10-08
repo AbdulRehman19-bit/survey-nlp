@@ -68,3 +68,39 @@ def test_cap_keeps_the_strongest_themes_and_ranks_the_general_theme_last():
     themes = [{"theme_name": "A", "keywords": []}, {"theme_name": "B", "keywords": []}, {"theme_name": "G", "keywords": [], "general": True}]
     cfg = {"assign": {"min_sim": 0.4, "secondary_margin": 0.2, "keyword_min_len": 3, "max_themes_per_clause": 2}}
     assert sorted(run(clauses, E, themes, C, cfg).theme_idx.tolist()) == [0, 1]
+
+
+def test_general_theme_is_dropped_when_a_specific_theme_took_the_clause():
+    clauses = pd.DataFrame({"clause_id": [0, 1], "clause": ["good box", "it is good"]})
+    E = np.array([[0.8, 0, 0.8], [0, 0, 1]], np.float32)                       # clause 0 is close to A and to the general theme G
+    C = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], np.float32)
+    themes = [{"theme_name": "A", "keywords": []}, {"theme_name": "B", "keywords": []},
+              {"theme_name": "G", "keywords": [], "general": True}]
+    cfg = {"assign": {"min_sim": 0.5, "secondary_margin": 0.5, "keyword_min_len": 3, "fallback_min_sim": 0.2, "max_themes_per_clause": 2}}
+    out = run(clauses, E, themes, C, cfg)
+    assert out[out.clause_id == 0].theme_idx.tolist() == [0]                   # A only: G is not added next to a specific theme
+    assert out[out.clause_id == 1].theme_idx.tolist() == [2]                   # nothing specific: G
+
+
+def test_hand_written_keyword_match_is_not_removed_by_the_cap():
+    clauses = pd.DataFrame({"clause_id": [0], "clause": ["a refreshing and fruity flavour"]})
+    E = np.array([[0.7, 0.7, 0.05]], np.float32)                              # close to A and B, far from R
+    C = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], np.float32)
+    themes = [{"theme_name": "A", "keywords": []}, {"theme_name": "B", "keywords": []},
+              {"theme_name": "R", "keywords": ["refreshing"], "curated_keywords": ["refreshing"]}]
+    cfg = {"assign": {"min_sim": 0.4, "secondary_margin": 0.5, "keyword_min_len": 3, "max_themes_per_clause": 2}}
+    out = run(clauses, E, themes, C, cfg)
+    assert 2 in out.theme_idx.tolist()                                         # R is kept although A and B are stronger
+
+
+def test_theme_name_word_matches_by_keyword_but_a_shared_name_word_does_not():
+    clauses = pd.DataFrame({"clause_id": [0, 1], "clause": ["it feels refreshing to drink", "a nice taste"]})
+    E = np.array([[0, 0.5, 0.5], [0.5, 0, 0.5]], np.float32)                  # below min_sim for every theme: only a keyword can match
+    C = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], np.float32)
+    themes = [{"theme_name": "Refreshing Taste", "keywords": [], "assign_keywords": ["refreshing", "taste"]},
+              {"theme_name": "Taste", "keywords": [], "assign_keywords": ["taste"]},
+              {"theme_name": "Other", "keywords": []}]
+    cfg = {"assign": {"min_sim": 0.9, "secondary_margin": 0.03, "keyword_min_len": 3}}
+    out = run(clauses, E, themes, C, cfg)
+    assert out[out.clause_id == 0].theme_idx.tolist() == [0]                   # "refreshing" is in the name of theme 0
+    assert out[out.clause_id == 1].theme_idx.tolist() == [1]                   # "taste" belongs to the theme called Taste, not to Refreshing Taste
