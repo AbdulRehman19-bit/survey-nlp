@@ -1,0 +1,38 @@
+[
+  {
+    "name": "coco",
+    "config": "config_default.yaml",
+    "input": "data/coco_pops_VR.xlsx",
+    "role": "dev",
+    "note": "Coco Pops cereal survey (wide layout, Like / Dislike). Real data: stays in data/, which is not committed."
+  },
+  {
+    "name": "beverage",
+    "config": "config_beverage.yaml",
+    "input": null,
+    "role": "dev",
+    "note": "Beverage open ends with a fixed codebook (almost every theme is user-defined), so it mostly tests that nothing breaks.",
+    "aggregate": false
+  },
+  {
+    "name": "beverage_generic",
+    "config": "config_default.yaml",
+    "input": "data/open_ends.xlsx",
+    "role": "dev",
+    "note": "The same beverage answers with the generic config: themes discovered from the data."
+  },
+  {
+    "name": "synthetic",
+    "config": "config_default.yaml",
+    "input": "eval/suite/snack_drink_synthetic.xlsx",
+    "role": "dev",
+    "note": "Synthetic snack / drink answers (templated, repetitive wording)."
+  },
+  {
+    "name": "app_reviews",
+    "config": "config_default.yaml",
+    "input": "eval/suite/app_reviews_synthetic.xlsx",
+    "role": "heldout",
+    "note": "Generated service / app-review answers (non-food). HELD OUT: reported, never used to choose a default or a threshold."
+  }
+]
