@@ -160,6 +160,7 @@ def main():
     r.add_argument("--force", action="store_true", help="ignore stage checkpoints (embedding cache is kept)")
     r.add_argument("--input", help="survey file to analyse (overrides input.path); results go to runs/<file name>/")
     r.add_argument("--run-dir", help="where to write results (default runs/<input file name> with --input)")
+    r.add_argument("--rediscover", action="store_true", help="find the data's themes again instead of reusing the saved clusters (runs/<dir>/clusters.json)")
     r.add_argument("--n-themes", type=int, help="how many themes to keep (default from config, 10)")
     r.add_argument("--themes", help='required themes, comma-separated, e.g. "Packaging,Price" (skips the prompts)')
     r.add_argument("--prompt", action="store_true", help="ask about themes even if stdin is not a terminal")
@@ -197,7 +198,10 @@ def main():
     last.parent.mkdir(parents=True, exist_ok=True)
     last.write_text(json.dumps(edits, indent=2))              # remembered as the default for the next run
     print(f"\nThemes: keep {_default_n(cfg, edits)}; required: {_names(edits['required']) or 'none'}; {len(edits['ops'])} edits")
-    run(a.config, a.until, a.force, overrides=_overrides(cfg, edits))
+    ov = _overrides(cfg, edits)
+    if a.rediscover:
+        ov["themes"]["rediscover"] = True
+    run(a.config, a.until, a.force, overrides=ov)
 
 
 if __name__ == "__main__":

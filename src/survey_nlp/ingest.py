@@ -88,10 +88,9 @@ def _drop_id_row(df: pd.DataFrame, text_cols: list) -> pd.DataFrame:
     return df
 
 
-def _spelling(clean: pd.Series, cfg, c: dict) -> pd.Series:
-    """Repair typos in the text the models read ("artifical" -> "artificial"). The answer shown in the results stays as it was written.
-    Words from your own theme names and keywords are never changed. The changes are listed in <run_dir>/spelling_corrections.json."""
-    from . import spelling
+def protected_words(cfg) -> list:
+    """Words the spelling repair must not touch: those of the user's own theme names and keywords. They change the text the models
+    read, so the pipeline also uses them in the cache key of this stage."""
     t = cfg["themes"] if "themes" in cfg.raw else {}
     protect = set()
     for r in t.get("required") or []:
@@ -99,6 +98,14 @@ def _spelling(clean: pd.Series, cfg, c: dict) -> pd.Series:
         protect |= set(re.findall(r"[A-Za-z']{3,}", " ".join([r.get("name", "")] + list(r.get("keywords") or []))))
     for kws in ((t.get("curation") or {}).get("extra_keywords") or {}).values():
         protect |= set(re.findall(r"[A-Za-z']{3,}", " ".join(kws)))
+    return sorted(protect)
+
+
+def _spelling(clean: pd.Series, cfg, c: dict) -> pd.Series:
+    """Repair typos in the text the models read ("artifical" -> "artificial"). The answer shown in the results stays as it was written.
+    Words from your own theme names and keywords are never changed. The changes are listed in <run_dir>/spelling_corrections.json."""
+    from . import spelling
+    protect = set(protected_words(cfg))
     uniq = clean[clean.str.len() > 0].drop_duplicates().tolist()
     fixes = spelling.find_corrections(uniq, c, protect)
     rd = Path(cfg["run_dir"])

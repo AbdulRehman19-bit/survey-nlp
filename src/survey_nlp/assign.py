@@ -22,7 +22,7 @@ def _name_words(themes, c):
     """For every theme, the words of its own name that are distinctive: a theme called "Refreshing Taste" is matched by the word
     "refreshing" but not by "taste" (the name of another theme, shared by many clauses). Only words the discovery found frequent in
     the theme and clearly rarer elsewhere (its assign_keywords) are used, so a name never turns into a noisy keyword."""
-    words = [set(re.findall(r"[a-z']+", t["theme_name"].lower())) for t in themes]
+    words = [set(re.findall(r"[a-z']+", t["theme_name"].lower().split(" & ")[0])) for t in themes]       # a joined name: its first topic only
     out = []
     for j, t in enumerate(themes):
         others = set().union(*[w for k, w in enumerate(words) if k != j and len(w) == 1])        # a word that is the whole name of another theme
@@ -50,6 +50,7 @@ def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
     sec = (s2 >= c["min_sim"]) & ((s1 - s2) <= c["secondary_margin"]) & (order[:, 1] != order[:, 0])
     A[r[sec], order[sec, 1]] = True
     K = np.zeros_like(A)
+    trusted = np.zeros(S.shape[1], bool)                # themes with words a person wrote: those words match whatever the similarity
     name_kws = _name_words(themes, c)
     for j, t in enumerate(themes):                      # whole-word keyword match, case-insensitive
         # Only words a person wrote for the theme (required themes, curation) match by keyword. The words discovered from the
@@ -60,6 +61,9 @@ def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
         kws = [k for k in kws if k.startswith("re:") or len(k) >= c["keyword_min_len"]]
         if kws:                                         # a keyword starting with "re:" is a raw regex
             K[:, j] = clauses["clause"].str.contains(_rx(kws), regex=True).to_numpy()
+            trusted[j] = bool(t.get("curated_keywords"))
+            if not trusted[j]:                          # a word taken from the theme's name only counts when the clause is also close in meaning
+                K[:, j] &= S[:, j] >= c.get("keyword_min_sim", 0.25)   # ("pieces" in "mostly white pieces and they go slimy in milk" is not about Pieces)
     general = [j for j, t in enumerate(themes) if t.get("general")]
     if c.get("general_examples") and not general:       # generic remarks are left without a theme (only when no theme wants them)
         left = _general_sim(E_raw, cfg) >= c.get("general_min_sim", 0.9)
@@ -97,7 +101,7 @@ def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
         first = np.r_[True, ii[order_][1:] != ii[order_][:-1]]
         start = np.maximum.accumulate(np.where(first, np.arange(len(ii)), 0))
         rank[order_] = np.arange(len(ii)) - start
-        keep = (rank < cap) | K[ii, jj]                 # a word you wrote for a theme always counts: it is never pushed out by the cap
+        keep = (rank < cap) | (K[ii, jj] & trusted[jj])  # a word you wrote for a theme always counts: it is never pushed out by the cap
         ii, jj = ii[keep], jj[keep]
     if general and "text_key" in clauses:               # answer level too: a general remark next to a specific theme in the same answer is dropped
         tk = clauses["text_key"].to_numpy()

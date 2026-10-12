@@ -30,7 +30,7 @@ def test_discovered_keywords_do_not_match_unless_enabled_and_regex_keywords_work
     base = {"min_sim": 0.9, "secondary_margin": 0.03, "keyword_min_len": 3}
     discovered = [{"theme_name": "Milk", "keywords": ["good"]}]
     assert run(clauses, E, discovered, C, {"assign": base}).empty                                      # discovered words ignored
-    assert run(clauses, E, discovered, C, {"assign": {**base, "use_discovered_keywords": True}}).clause_id.tolist() == [2]
+    assert run(clauses, E, discovered, C, {"assign": {**base, "use_discovered_keywords": True, "keyword_min_sim": 0}}).clause_id.tolist() == [2]
     hand = [{"theme_name": "Milk", "keywords": ["good"], "curated_keywords": ["re:milk(?! chocolate)", "soggy"]}]
     assert run(clauses, E, hand, C, {"assign": base}).clause_id.tolist() == [1]                         # hand-written replace discovered
 
@@ -100,8 +100,20 @@ def test_theme_name_word_matches_by_keyword_but_a_shared_name_word_does_not():
     themes = [{"theme_name": "Refreshing Taste", "keywords": [], "assign_keywords": ["refreshing", "taste"]},
               {"theme_name": "Taste", "keywords": [], "assign_keywords": ["taste"]},
               {"theme_name": "Other", "keywords": []}]
-    cfg = {"assign": {"min_sim": 0.9, "secondary_margin": 0.03, "keyword_min_len": 3}}
+    cfg = {"assign": {"min_sim": 0.9, "secondary_margin": 0.03, "keyword_min_len": 3, "keyword_min_sim": 0}}
     out = run(clauses, E, themes, C, cfg)
     assert out[out.clause_id == 0].theme_idx.tolist() == [0]                   # "refreshing" is in the name of theme 0
     assert out[out.clause_id == 1].theme_idx.tolist() == [1]                   # "taste" belongs to the theme called Taste, not to Refreshing Taste
 
+
+
+def test_a_word_not_written_by_a_person_needs_some_closeness_in_meaning_and_does_not_break_the_cap():
+    clauses = pd.DataFrame({"clause_id": [0, 1], "clause": ["white pieces in milk", "pieces"]})
+    E = np.array([[0, 1], [1, 0]], np.float32)             # clause 0 is far from the theme, clause 1 is on it
+    C = np.array([[1, 0]], np.float32)
+    base = {"min_sim": 0.9, "secondary_margin": 0.03, "keyword_min_len": 3, "use_discovered_keywords": True}
+    themes = [{"theme_name": "Pieces", "keywords": ["pieces"]}]
+    assert run(clauses, E, themes, C, {"assign": base}).clause_id.tolist() == [1]                    # the word alone is not enough
+    assert run(clauses, E, themes, C, {"assign": {**base, "keyword_min_sim": 0}}).clause_id.tolist() == [0, 1]
+    mine = [{"theme_name": "Pieces", "keywords": [], "curated_keywords": ["pieces"]}]
+    assert run(clauses, E, mine, C, {"assign": base}).clause_id.tolist() == [0, 1]                   # a word you wrote always counts
