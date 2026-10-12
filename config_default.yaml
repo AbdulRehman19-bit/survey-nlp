@@ -84,7 +84,21 @@ themes:
   sentiment_axis:                 # take the positive-vs-negative direction out of the embeddings so themes form by TOPIC, not by tone
     positive: [It is good, I love it, I really like it, It is great, It is excellent, Very nice]
     negative: [It is bad, I hate it, I really dislike it, It is terrible, It is awful, Very unpleasant]
+  name_min_coverage: 0.25         # a theme's name must be used by this share of its clauses, else the next candidate is tried; none fits = "mixed" and the theme is split if both halves fit
+  n_phrases: 6                    # keywords per theme: noun chunks and 2-3-word runs, ranked by meaning + lift, chosen with MMR so the list is varied. Remove the line for the older word list
+  phrase_mmr_lambda: 0.6          # 1 = only the most relevant phrases, lower = more varied
+  n_examples: 3                   # representative clauses per theme (nearest the centre) shown on the themes sheet. 0 or no line = none
+  aspect_labels: []               # OFF. Supply your own generic labels to have a theme named after a describing word ("Crispy") given the closest one, e.g. [Taste, Price, Packaging]. Every label is yours: none are built in
+  aspect_label_min_sim: 0.45      # a label is used only when the theme's centre is at least this close (cosine) to it; otherwise the best noun candidate is kept
+  filler_mode: language           # words that never name a theme: language = general English judging / filler words only (no food or drink words); fixed = the original longer list; data / hybrid = judging words found in the survey (measured worse, see PROJECT_OVERVIEW)
+  filler_k: 2.0                   # data / hybrid: a word is a judging word when it lies this many standard deviations further along the positive-negative axis than the survey's average word
+  # Optional relative rules, OFF by default (measured worse on the evaluation suite, see PROJECT_OVERVIEW section 8). Add a line to switch one on:
+  #   merge_k: 1.5            merge a theme pair whose centre similarity is more than k std above the mean of all pairs, when main words or names agree
+  #   split_ratio: 2.0        split a theme this many times the median size when it falls apart more clearly than the survey's other themes
+  #   split_k: 1.5            ... clearly = silhouette more than this many std above the mean (and split_min_gain above the median)
+  #   name_min_lift: 2.0      judge a name by how much more the theme uses it than the rest of the survey (with name_min_coverage as the floor)
   required_kw_min_sim: 0.35       # a word learned for a theme you added must be this close in meaning to the theme (drops 'good', 'favourite' from Price)
+  general_exclude_sim: 0.4        # clauses this close to the General comment theme are not clustered (they say nothing about a topic)
   required_merge_cos: 0.95        # a built-in theme is added as its own theme, never renames a discovered one
 assign:
   min_sim: 0.4
@@ -92,7 +106,7 @@ assign:
   keyword_min_len: 3
   center: true
   keyword_min_precision: 0.5
-  fallback_min_sim: 0.12
+  fallback_min_sim: 0.25
   max_themes_per_clause: 2
   use_discovered_keywords: false
   general_min_sim: 0.9          # a clause this close in meaning to a general comment below is left without a theme

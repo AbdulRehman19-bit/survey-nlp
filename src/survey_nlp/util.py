@@ -1,3 +1,4 @@
+import os
 import hashlib, random
 import numpy as np
 import torch
@@ -33,6 +34,13 @@ def set_seed(s: int) -> None:
 
 
 _AXIS = {}
+
+
+def detail(message):
+    """Diagnostics about how the themes were formed (a name replaced, themes split or merged, the quality summary). Printed on the command
+    line; the app sets SURVEY_NLP_QUIET so its run log stays short. Everything is still in the workbook and in the run folder."""
+    if not os.environ.get("SURVEY_NLP_QUIET"):
+        print(message)
 
 
 def axis_of(cfg):

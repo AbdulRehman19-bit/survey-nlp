@@ -1,17 +1,17 @@
-import os, pickle, time
+import inspect, os, pickle, time
 from pathlib import Path
 import numpy as np
 import pandas as pd
 from .config import Cfg
 from .util import sha, set_seed
-from . import ingest, segment, embed, themes as th, assign as asg, sentiment, export
+from . import cache, ingest, segment, spelling, embed, themes as th, assign as asg, sentiment, export, quality, util
 
 # (stage, parent stages, config sections that invalidate it)
 PLAN = [
     ("ingest",  [],                  ["input", "embed.model"]),
     ("segment", ["ingest"],          ["segment"]),
     ("embed",   ["segment"],         ["embed"]),
-    ("themes",  ["embed"],           ["themes", "seed"]),
+    ("themes",  ["embed"],           ["themes", "seed", "assign.min_sim"]),     # discover() uses assign.min_sim as its floor
     ("assign",  ["themes"],          ["assign"]),
     ("overall", ["ingest"],          ["overall"]),
     # evidence_threshold / allowance are applied at export (sentiment.aggregate), so they don't invalidate ABSA
@@ -19,6 +19,20 @@ PLAN = [
     ("export",  ["absa", "overall"], ["output"]),
 ]
 ORDER = [p[0] for p in PLAN]
+
+
+def _code_sig(*parts) -> str:
+    """Fingerprint of the code a stage runs (modules, or single functions). It is part of the stage's cache key, so a saved result made
+    by older code is never reused after the code changed: that would show themes the current code no longer produces."""
+    src = "".join(inspect.getsource(p) for p in parts)
+    return sha(src, 8)
+
+
+def _code_for(name):
+    return {"ingest": (ingest, spelling), "segment": (segment,), "embed": (embed, cache), "themes": (th, util, embed, quality),
+            "assign": (asg, util, embed), "export": (export, quality),
+            "overall": (sentiment._load, sentiment._cols, sentiment.predict_probs, sentiment.run_overall),
+            "absa": (sentiment._load, sentiment._cols, sentiment.predict_probs, sentiment.run_absa)}.get(name, ())
 
 
 def _file_sig(p):
@@ -87,6 +101,9 @@ def run(config="config.yaml", until="export", force=False, overrides=None):
     art, keys, timings = {}, {}, {}
     for name, parents, sections in PLAN:
         seed = [_file_sig(cfg["input"]["path"])] if name == "ingest" else [keys[p] for p in parents]
+        if name == "ingest":
+            seed.append("protect:" + ",".join(ingest.protected_words(cfg)))      # the spelling repair skips these words
+        seed.append("code:" + _code_sig(*_code_for(name)))
         keys[name] = sha("|".join(seed + [cfg.section_hash(*sections)]), 12)
         f, kf = rd / f"{name}.pkl", rd / f"{name}.key"
         if name != "export" and not force and f.exists() and kf.exists() and kf.read_text() == keys[name]:
