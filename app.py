@@ -11,7 +11,9 @@ import glob
 import hashlib
 import io
 import json
+import logging
 import os
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -19,6 +21,14 @@ import streamlit as st
 import yaml
 
 ROOT = Path(__file__).parent
+os.environ.setdefault("SURVEY_NLP_QUIET", "1")                                  # theme diagnostics (splits, renames, merges, quality line) stay out of the run log here
+# Terminal noise that does not matter: Streamlit's file watcher probes every transformers module and logs a traceback for the ones that need
+# the optional torchvision; the Hugging Face hub warns about unauthenticated requests although the models are local; a library deprecation
+# notice and pandas' note about regex groups. Real errors are not touched.
+logging.getLogger("streamlit.watcher.local_sources_watcher").setLevel(logging.CRITICAL)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*has match groups.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*torch.jit.script.*", category=FutureWarning)
 DEFAULTS = ROOT / "config_default.yaml"
 PRESETS = sorted(p.name for p in ROOT.glob("config*.yaml"))                 # settings presets: every config*.yaml next to the app
 DEFAULT_PRESET = DEFAULTS.name                                                # generic: themes come from the answers; other presets are optional
@@ -26,21 +36,26 @@ APP_RUNS = ROOT / "runs" / "app"
 MIN_SIM, FALLBACK_SIM, EVIDENCE = 0.40, 0.12, 0.60      # matching strictness: fixed defaults, not shown on the page
 GREEN, YELLOW, RED = "#C6EFCE", "#FFEB9C", "#FFC7CE"
 NOT_THEMES = ("respondent_id", "Answer", "Overall", "Question")      # columns on a question sheet that are not themes
-INTERNAL_SHEETS = {"results", "results_codes", "detail", "pairs", "themes", "timings", "spelling", "Combined"}
+INTERNAL_SHEETS = {"results", "results_codes", "detail", "pairs", "themes", "quality", "timings", "spelling", "Combined"}
 
 st.set_page_config(page_title="Survey themes and sentiment", layout="wide")
 
 
 # ----------------------------------------------------------------------------- helpers
 class LiveLog(io.TextIOBase):
-    """Shows what the pipeline prints (stage names and timings) while it runs."""
+    """Shows the progress of a run: one short line per finished stage ("[themes] 12.4s"). The pipeline's other messages (layout found,
+    spelling repaired, ...) are left out, and the lines wrap instead of running off the edge of the box."""
 
-    def __init__(self, box):
-        self.box, self.buf = box, ""
+    def __init__(self, box, keep=8):
+        self.box, self.buf, self.lines, self.keep = box, "", [], keep
 
     def write(self, s):
         self.buf += s
-        self.box.code(self.buf[-3000:] or " ", language=None)
+        *done, self.buf = self.buf.split("\n")                    # only complete lines
+        shown = [ln.strip() for ln in done if ln.strip().startswith("[") or ln.strip().startswith("total")]
+        if shown:
+            self.lines = (self.lines + shown)[-self.keep:]
+            self.box.code("\n".join(self.lines), language=None, wrap_lines=True)
         return len(s)
 
 
@@ -163,13 +178,28 @@ def settings_sig(cfg: dict, edits: dict) -> str:
     return hashlib.sha1(json.dumps([cfg, ov], sort_keys=True, default=str).encode()).hexdigest()
 
 
-def run_stage(cfg: dict, edits: dict, until: str, force=False):
-    """Write the config, run the pipeline up to `until`, show the log live. Returns the stage outputs."""
+def _slider_to_box():
+    """Keep the typed number and the slider equal. The widget values are read with .get: when the page was last drawn without
+    these widgets (a stop earlier on the page, a new file) Streamlit has already dropped their keys and a plain read would fail."""
+    v = st.session_state.get("n_slider")
+    if v is not None:
+        st.session_state["n_box"] = v
+
+
+def _box_to_slider():
+    v = st.session_state.get("n_box")
+    if v is not None:
+        st.session_state["n_slider"] = min(30, int(v))
+
+
+def run_stage(cfg: dict, edits: dict, until: str, force=False, slot=None):
+    """Write the config, run the pipeline up to `until`, show the progress live in `slot` (a full-width container; the place of the
+    call otherwise, which inside a narrow column squeezes it). Returns the stage outputs."""
     run_dir = Path(cfg["run_dir"])
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg_path = run_dir / "config.yaml"
     cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
-    with st.status(f"Running up to '{until}'…", expanded=True) as status:
+    with (slot if slot is not None else st).status(f"Running up to '{until}'…", expanded=True) as status:
         log = LiveLog(st.empty())
         try:
             with contextlib.redirect_stdout(log):
@@ -220,6 +250,8 @@ st.caption("Open-ended answers in, themes and a Positive / Negative / Neutral ra
 @st.cache_resource(show_spinner="Loading the language tools. This takes about 30 seconds the first time the app starts.")
 def backend():
     from survey_nlp import export, ingest, pipeline      # heavy imports (torch, transformers): load once, after the page shows
+    from transformers.utils import logging as hf_logging
+    hf_logging.set_verbosity_error()                      # no model load reports in the terminal
     return export, ingest, pipeline
 
 
@@ -293,16 +325,17 @@ with tab_data:
     if "edits" not in st.session_state:
         st.session_state.edits = {**empty_edits(), "n_themes": preset["themes"].get("n_themes") or 10}
     edits = ss("edits", empty_edits())
-    if "n_slider" not in st.session_state:
-        st.session_state.n_slider = st.session_state.n_box = edits["n_themes"]
+    for k in ("n_slider", "n_box"):                                     # either key can be dropped by Streamlit; restore each one
+        if k not in st.session_state:
+            st.session_state[k] = min(30, edits["n_themes"]) if k == "n_slider" else edits["n_themes"]
     s1.write("**How many themes**")
     sl, bx = s1.columns([3, 1])
     sl.slider("Themes (slider)", 2, 30, key="n_slider", label_visibility="collapsed",
-              on_change=lambda: st.session_state.update(n_box=st.session_state.n_slider),
+              on_change=_slider_to_box,
               help="Drag the slider or type a number in the box. The built-in general-comment theme ('not specified') is added on top of "
                    "this number, so 10 gives 10 themes + 1. Themes you add yourself count inside the number.")
     bx.number_input("Themes (type)", 2, 100, key="n_box", label_visibility="collapsed",
-                    on_change=lambda: st.session_state.update(n_slider=min(30, st.session_state.n_box)))
+                    on_change=_box_to_slider)
     n_themes = int(st.session_state.n_box)
     s1.caption(f"{n_themes} themes + {n_general(preset)} general-comment theme for remarks that name no topic.")
     req_text = s1.text_area("Extra themes that must be included (one per line, optional words after a colon)",
@@ -382,6 +415,7 @@ with tab_themes:
                            "Main words": st.column_config.TextColumn("Main words", disabled=True)})
 
         e1, e2, e3 = st.columns(3)
+        progress = st.container()                                  # full width, right under the buttons: where the progress of an edit shows
         with e1:
             st.markdown("**Rename or remove**")
             st.caption("Rename in the table, untick Keep to remove, then apply.")
@@ -395,7 +429,7 @@ with tab_themes:
                 if new_ops:
                     edits["ops"] += new_ops
                     try:
-                        st.session_state.art = run_stage(cfg, edits, "themes")
+                        st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
                         st.rerun()
                     except ValueError as e:
                         edits["ops"] = edits["ops"][:-len(new_ops)]
@@ -415,7 +449,7 @@ with tab_themes:
                 else:
                     edits["ops"].append(["merge", merged_name.strip() or None, pick])
                     try:
-                        st.session_state.art = run_stage(cfg, edits, "themes")
+                        st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
                         st.rerun()
                     except ValueError as e:
                         edits["ops"].pop()
@@ -430,7 +464,7 @@ with tab_themes:
                     item["keywords"] = [k.strip() for k in add_kw.split(",") if k.strip()]
                 edits["required"] = [r for r in edits["required"] if r["name"].lower() != item["name"].lower()] + [item]
                 try:
-                    st.session_state.art = run_stage(cfg, edits, "themes")
+                    st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
                     st.rerun()
                 except ValueError as e:
                     st.error(str(e))

@@ -5,8 +5,8 @@ from pathlib import Path
 import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-from . import sentiment
-from .util import is_spec
+from . import quality, sentiment
+from .util import detail as log_detail, is_spec
 
 COMBINED = "Combined"                                      # sheet with every question's answers one under the other
 GREEN, RED, YELLOW ="C6EFCE", "FFC7CE", "FFEB9C"          # positive / negative / neutral cell colours
@@ -91,6 +91,16 @@ def short_names(questions, limit=28):
         out[q] = name
         used.add(name)
     return out
+
+
+def _themes_frame(themes):
+    """One row per theme; the representative clauses go into columns example_1, example_2, ... so they can be read in Excel."""
+    df = pd.DataFrame(themes)
+    if "representative_clauses" in df:
+        reps = df.pop("representative_clauses")
+        for k in range(max((len(r) for r in reps if isinstance(r, list)), default=0)):
+            df[f"example_{k + 1}"] = [r[k] if isinstance(r, list) and len(r) > k else None for r in reps]
+    return df
 
 
 def run(art, cfg, timings):
@@ -215,7 +225,7 @@ def run(art, cfg, timings):
 
     detail = pd.concat(detail_rows, ignore_index=True) if detail_rows else pd.DataFrame()
     pairs = art["absa"][["text_key", "scope", "theme", "clause", "sim", "via", "p_neg", "p_neu", "p_pos"]]
-    theme_tbl = pd.concat([pd.DataFrame(t).assign(scope=s) for s, (t, _) in T.items()], ignore_index=True)
+    theme_tbl = pd.concat([_themes_frame(t).assign(scope=s) for s, (t, _) in T.items()], ignore_index=True)
     # readable version: Positive / Negative / Neutral instead of the numeric codes (the coded sheet is kept)
     words = out
     if o.get("labels"):
@@ -237,7 +247,12 @@ def run(art, cfg, timings):
              label.get(codes["neutral"], codes["neutral"]): YELLOW}
     colour_of = lambda v: shade.get(v) if isinstance(v, (str, int)) and not isinstance(v, bool) else None
     other = [c for c in base.columns if c != "row_id"]                       # respondent id + keep_cols
-    reserved = {"results", "results_codes", "detail", "pairs", "themes", "timings", "spelling", COMBINED.lower()}
+    reserved = {"results", "results_codes", "detail", "pairs", "themes", "quality", "timings", "spelling", COMBINED.lower()}
+    report = None
+    if {"segment", "assign"} <= set(art):                                   # a stripped-down `art` (tests) has no clauses to measure
+        from .pipeline import scopes                                        # imported here: pipeline imports this module
+        report = quality.compute(art, cfg, scopes(cfg, long, art["segment"]))
+        q_summary, q_themes = quality.frames(report)
 
     def sheet_name(n):
         n = "".join(ch for ch in n if ch not in '[]:*?/\\')[:31] or "Question"     # characters Excel forbids in sheet names
@@ -275,10 +290,19 @@ def run(art, cfg, timings):
         detail.to_excel(xw, sheet_name="detail", index=False)
         pairs.to_excel(xw, sheet_name="pairs", index=False)
         theme_tbl.to_excel(xw, sheet_name="themes", index=False)
+        if report:
+            q_summary.to_excel(xw, sheet_name="quality", index=False)               # run summary, then one row per theme underneath
+            q_themes.to_excel(xw, sheet_name="quality", index=False, startrow=len(q_summary) + 3)
+            for cell in xw.sheets["quality"][len(q_summary) + 4]:
+                cell.font = Font(bold=True)
+            _style(xw.sheets["quality"], lambda h: 18)
         sp_file = rd / "spelling_corrections.json"
         if sp_file.exists() and json.loads(sp_file.read_text()):                 # typos repaired before the models read the answers
             pd.DataFrame(json.loads(sp_file.read_text())).to_excel(xw, sheet_name="spelling", index=False)
         pd.DataFrame([{"stage": k, "seconds": v} for k, v in timings.items()]).to_excel(xw, sheet_name="timings", index=False)
     (rd / "discovered_themes.json").write_text(json.dumps({s: t for s, (t, _) in T.items()}, indent=2))
     (rd / "timings.json").write_text(json.dumps(timings, indent=2))
+    if report:
+        quality.write_json(report, rd / "quality.json")
+        log_detail(quality.summary_line(report))
     return str(path)
