@@ -8,24 +8,6 @@ Open-ended questions analysed: "What did you LIKE about this product overall?" (
 Run: `survey-nlp run` (use `--until themes` to inspect themes, `--force` to ignore checkpoints).
 Output: `runs/latest/aspect_sentiment_results.xlsx` (sheet `results` = Positive/Negative/Neutral words,
 `results_codes` = 0/1/2, plus `detail`, `pairs`, `themes`, `timings`).
-
-## Timings (CPU, full run with `--force`, embedding cache warm)
-
-| stage | seconds |
-|---|---|
-| ingest | 0.54 |
-| segment | 0.25 |
-| embed | 0.00 (cached; first-ever run about 25) |
-| themes | 14.81 |
-| assign | 0.05 |
-| overall | 12.75 |
-| absa | 34.08 |
-| export | 1.21 |
-| **total** | **63.7** |
-
-A re-run with nothing changed takes about 1.4s. Changing only `absa.evidence_threshold`, `absa.allowance` or
-`output.*` re-runs only export.
-
 ## Calibration (200 labeled pairs)
 
 **Caveat: the labels were written by Claude (the coding assistant), not by a human annotator**, and without
