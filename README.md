@@ -176,7 +176,7 @@ Hand labels from one coder (Eleni) are the only ground truth.
 
 **Streamlit app.** The app used to build its settings from `config_default.yaml` only (`mode: spec`, so the Like / Dislike rules were off). Data tab > Settings now has a **Settings preset** selector listing every `config*.yaml` next to `app.py` (default `config_default.yaml`, generic): its fixed themes, keywords, rating rules and thresholds are used, the question selectors start from the preset's polarity, and the table can remove or rename a fixed theme. Pick `config_beverage.yaml` only for this survey's codebook. A run through the app on `open_ends.xlsx` gives the same numbers as the command line.
 
-**Number of themes.** In the app the slider is now the TOTAL number of themes (fixed ones included); a "No theme" column is always added on top. It sets `themes.n_total`: when there are more themes than that, the smallest are dropped, themes found in the answers first, then fixed ones (asking for 10 with the 15-theme beverage preset gives its 10 largest). The config key can be used from the command line too.
+**Number of themes.** In the app the number box (the slider was removed, see Update 6) is now the TOTAL number of themes (fixed ones included); a "No theme" column is always added on top. It sets `themes.n_total`: when there are more themes than that, the smallest are dropped, themes found in the answers first, then fixed ones (asking for 10 with the 15-theme beverage preset gives its 10 largest). The config key can be used from the command line too.
 
 **Generic by default.** `config_default.yaml` is now `mode: extended` and carries the general-English lists (`complaint_phrases`, `neutral_phrases`, `neutral_blockers`), so any dataset gets the rating rules with no codebook; the polarity of each question is read from its answers (`auto_polarity`) unless set in the app. Only the theme names and topic keywords are survey-specific, and they live in an optional preset such as `config_beverage.yaml`. On the beverage file with the generic default: overall accuracy 0.938, macro-F1 0.757, polarity agreement 0.970 (the same rating rules), theme F1 0.48 because themes are found from the answers instead of the codebook, 20 of 500 answers without a theme.
 
@@ -184,7 +184,7 @@ Hand labels from one coder (Eleni) are the only ground truth.
 
 **Theme selection and cache fixes.** (1) When the total number of themes is smaller than the number of fixed themes, the trim used to drop fixed themes in list order (the biggest ones first, because their size was counted as 0); it now ranks found themes, then your own themes by their own size, and the general-comment theme last (`themes._trim_to_total`). (2) Generic remarks ("I like it", "Everything is right") are left out of the clustering (`themes.general_exclude_sim`, 0.4 against the General comment seeds; they are still assigned afterwards), so they no longer form a mixed theme that is named after one word in it. (3) Stage caches: the `themes` stage now also depends on `assign.min_sim` (it is its floor); the `ingest` stage depends on the theme words the spelling repair protects; and every cached stage depends on a fingerprint of the code it runs, so results saved by older code are never reused after an update. To clear everything by hand: delete `cache/` (embeddings) and the `*.pkl` / `*.key` files in `runs/*/`.
 
-**Stable themes.** The clusters found in the answers are saved in `<run_dir>/clusters.json`, keyed by the clauses and the discovery settings. Adding a theme, naming one or re-running reuses them, so results do not shift between runs. A changed file or discovery setting (`min_cluster_size`, `n_themes`, ...) finds them again; `--rediscover` forces it, `themes.freeze: false` turns it off.
+**Stable themes.** The clusters found in the answers are saved in `<run_dir>/clusters.json`, keyed by the clauses, the discovery settings and a fingerprint of the clustering code (Update 6). Adding a theme, naming one or re-running reuses them, so results do not shift between runs. A changed file or discovery setting (`min_cluster_size`, `n_themes`, ...) finds them again; `--rediscover` forces it, `themes.freeze: false` turns it off.
 
 **Theme names and main words.** A theme's main words skip judging and filler words ("easy", "overall", "love"), verbs, words used everywhere in the survey and repeats ("drink / easy drink / drink overall" becomes one entry). Names come from the same cleaned words (nouns and plain attributes), and a cluster of generic remarks is folded into General comment (`themes.fold_generic`, `generic_theme_sim`). Two-part names are off unless `themes.name_combine: true`.
 
@@ -194,3 +194,26 @@ Hand labels from one coder (Eleni) are the only ground truth.
 
 Judging words ("attractive", "unpleasant", "love") are found by meaning (their position on the positive-vs-negative axis, `themes.opinion_axis`), not from a list, and are left out of the topic words, the names and the main words. A group of answers holding more than `themes.aspect_split_frac` (0.18) of all answers is split, so one or two themes do not swallow half the survey. A theme with no usable name is named after its most shared topic word, else "Other".
 
+
+## Update 6: the number of themes asked for is the number you get (small surveys)
+
+**Problem.** A file of 150 answers (`data/open_ends_75_likes_75_dislikes_original.xlsx`) asked for 12 themes gave 4 (3 found + General comment). Short answers repeat few words:
+only 24 of 180 topic words occurred in 4 or more clauses (`themes.aspect_min_df`), the 14 word groups were mostly 1-2 words, and every group under `min_theme_clauses` (8) was
+dropped together with its clauses. 3 groups were left. The fallback only fired below `themes.min_themes` (2), so 3 counted as success, and nothing filled the list up to the number asked for.
+
+**What changed** (`themes.py`; no new settings):
+
+| Area | Change |
+|---|---|
+| Looser search when short | `_find_candidates`: when fewer themes than asked are found (and `themes.expand` is not false), it tries a minimum theme size scaled to the data (half an even split, between 3 and `min_theme_clauses`), then topic words that occur 3 and 2 times, then dense regions with smaller clusters. The attempt with the most themes is kept. The first try is unchanged, so large surveys give the same themes as before |
+| Exact count | `_split_to_count`: if there are still fewer themes than asked, the largest theme is split in two (ward linkage on its clause vectors, no random step) until the number is reached. Runs after the merge / reduce step, and again after generic themes are folded into General comment. With fewer clauses than themes it stops and says so. Each split is logged ("a theme of 29 clauses is split into 15 and 14") |
+| Result on the 150-answer file | 12 themes + General comment (was 3 + General comment) |
+| Number box | The "How many themes" slider on the Settings page was removed; only the number box (2-100) is left |
+| Model loaded once | `embed._model` keeps the embedding model in memory. Naming and merging themes embed new words many times in one run, and each call reloaded the weights from disk (about 35 loads in one run on Streamlit). Results are unchanged |
+| Saved clusters | `clusters.json` is keyed by a fingerprint of the clustering code (`themes._clustering_code_sig`), so clusters saved by older code are never reused after an update |
+
+**Caveats.** A split always reaches the number but is not always a clean topic: on 150 answers the smallest themes hold 5-8 clauses and two of them can be near-duplicates ("Taste" / "Flavour"). The themes were not hand-checked.
+Asking for more themes than the data has distinct topics gives smaller and less distinct themes, not an error.
+
+**On Streamlit Cloud.** The embedding cache (`cache/`) and the run folders (`runs/app/<session>/`) are on the server's disk and in `.gitignore`: a reboot or redeploy can clear them, and every browser session has its own run folder.
+After a deploy the first run embeds everything again and is slow. If a result looks like the old code, open the app in a new tab or use "Reboot app".
