@@ -1,12 +1,3 @@
----
-title: Survey Sentiment Analysis
-emoji: 📊
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 8501
-pinned: false
----
 
 # Survey NLP: open-ended answers to themes and per-theme sentiment
 
