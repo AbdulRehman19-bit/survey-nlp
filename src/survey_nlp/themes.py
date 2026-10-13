@@ -1,4 +1,4 @@
-import json, re
+import inspect, json, re
 from pathlib import Path
 import numpy as np
 import spacy
@@ -1052,14 +1052,22 @@ _AFTER_CLUSTERING = {"required", "curation", "n_total", "learn_keywords", "requi
                      "name_min_coverage", "name_min_lift", "merge_k", "split_ratio", "split_k", "split_min_gain", "n_phrases", "n_examples", "phrase_mmr_lambda", "phrase_pool", "phrase_min_count", "phrase_lift_weight", "aspect_labels", "aspect_label_min_sim", "merge_sim", "merge_jaccard", "merge_name_sim"}                       # naming and splitting a mixed theme work on the saved clusters
 
 
+def _clustering_code_sig() -> str:
+    """Fingerprint of the code that finds the clusters, so clusters saved by older code are never reused after it changed."""
+    fns = (_find_candidates, _aspect_candidates, _candidates, _cluster, _split_large, _scaled, _with_aspects, _aspect_text, _clause_terms,
+           _noise_for, _opinion_words)
+    return sha("".join(inspect.getsource(f) for f in fns), 8)
+
+
 def _discovery_fingerprint(clauses, general, cfg) -> str:
-    """What the clustering depends on: the clauses, the embedding model, the seed and the discovery settings. Not the themes you add."""
+    """What the clustering depends on: the clauses, the embedding model, the seed, the discovery settings and the clustering code.
+    Not the themes you add."""
     c = cfg["themes"]
     settings = {k: v for k, v in c.items() if k not in _AFTER_CLUSTERING}
     gen = list(general[0].get("seeds") or _auto_seeds(general[0]["name"])) if general and c.get("general_exclude_sim") is not None else []
     keys = clauses["clause_key"].tolist() if "clause_key" in clauses else clauses["clause"].tolist()
     blob = json.dumps({"keys": sha("|".join(map(str, keys)), 16), "model": str(cfg["embed"]["model"]), "seed": cfg["seed"],
-                       "settings": settings, "general": gen, "method": c.get("method", "aspects"), "aspect_weight": c.get("aspect_weight", 0.5), "algo": 2, "lists": sha(",".join(sorted(_NOISE | _GENERIC_NAMES)), 8), "axis": cfg["themes"].get("sentiment_axis")}, sort_keys=True, default=str)
+                       "settings": settings, "general": gen, "method": c.get("method", "aspects"), "aspect_weight": c.get("aspect_weight", 0.5), "algo": 2, "code": _clustering_code_sig(), "lists": sha(",".join(sorted(_NOISE | _GENERIC_NAMES)), 8), "axis": cfg["themes"].get("sentiment_axis")}, sort_keys=True, default=str)
     return sha(blob, 16)
 
 
