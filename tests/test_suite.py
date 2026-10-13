@@ -73,7 +73,7 @@ def test_the_app_script_is_valid_python_and_shows_edit_progress_in_a_full_width_
     import ast
     src = (ROOT / "app.py").read_text(encoding="utf-8")
     ast.parse(src)                                                       # Streamlit would only show the SyntaxError in the browser
-    assert src.count("slot=progress") == 3 and "progress = st.container()" in src      # apply / merge / add report under the buttons, not inside a column
+    assert src.count("slot=progress") == 4 and "progress = st.container()" in src      # apply / merge / add report under the buttons, not inside a column
     assert "wrap_lines=True" in src                                      # the progress lines wrap instead of running off the box
 
 

@@ -69,7 +69,7 @@ themes:
   center: true
   center_strength: 0.7   # remove 70% of the shared direction, so the most common topic still has a direction
   required:                       # built in, not survey-specific: generic remarks ("it is good", "not for me") get this theme
-  - name: General comment
+  - name: Not Specific
     semantic_only: true           # no keywords, matched by meaning only
     general: true                 # also receives every clause no other theme matched, so every answer has a theme
     seeds:
@@ -98,7 +98,7 @@ themes:
   #   split_k: 1.5            ... clearly = silhouette more than this many std above the mean (and split_min_gain above the median)
   #   name_min_lift: 2.0      judge a name by how much more the theme uses it than the rest of the survey (with name_min_coverage as the floor)
   required_kw_min_sim: 0.35       # a word learned for a theme you added must be this close in meaning to the theme (drops 'good', 'favourite' from Price)
-  general_exclude_sim: 0.4        # clauses this close to the General comment theme are not clustered (they say nothing about a topic)
+  general_exclude_sim: 0.4        # clauses this close to the Not Specific theme are not clustered (they say nothing about a topic)
   required_merge_cos: 0.95        # a built-in theme is added as its own theme, never renames a discovered one
 assign:
   min_sim: 0.4

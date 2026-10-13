@@ -13,6 +13,7 @@ import io
 import json
 import logging
 import os
+import traceback
 import warnings
 from pathlib import Path
 
@@ -40,25 +41,33 @@ INTERNAL_SHEETS = {"results", "results_codes", "detail", "pairs", "themes", "qua
 
 st.set_page_config(page_title="Survey themes and sentiment", layout="wide")
 
+CSS = """
+<style>
+.block-container {padding-top: 4.5rem; max-width: 1280px;}
+footer {visibility: hidden;}
+.hero {background: #1f3a5f; color: #fff; padding: 1.4rem 1.8rem;
+       border-radius: 8px; margin-bottom: 1.2rem;}
+.hero h1 {color: #fff; margin: 0 !important; padding: 0 !important; font-size: 1.9rem; font-weight: 700; letter-spacing: -.01em; line-height: 1.2;}
+.hero p {margin: .35rem 0 0; opacity: .92; font-size: 1.02rem;}
+.stTabs [data-baseweb="tab-list"] {gap: .4rem; border-bottom: 1px solid #dfe2ee;}
+.stTabs [data-baseweb="tab"] {height: 2.8rem; padding: 0 1.1rem; border-radius: 10px 10px 0 0; font-weight: 600;}
+.stTabs [aria-selected="true"] {background: transparent;}
+[data-testid="stMetric"] {background: transparent; border: 1px solid rgba(128,134,160,.35); border-radius: 8px; padding: .9rem 1.1rem;
+                          box-shadow: 0 1px 3px rgba(20,24,60,.05);}
+[data-testid="stMetricLabel"] {opacity: .7;}
+[data-testid="stMetricValue"] {font-weight: 700;}
+.stButton > button, .stDownloadButton > button {border-radius: 10px; font-weight: 600; padding: .45rem 1.1rem;}
+[data-testid="stDataFrame"], [data-testid="stDataEditor"] {border: 1px solid #e3e6f2; border-radius: 12px; overflow: hidden;}
+[data-testid="stExpander"] {background: transparent; border-radius: 12px; border: 1px solid rgba(128,134,160,.35);}
+h2, h3 {letter-spacing: -.01em;}
+.pill {display: inline-block; padding: .1rem .6rem; border-radius: 999px; font-size: .8rem; font-weight: 600; margin-right: .3rem;}
+.pill.pos {background: #dcfce7; color: #166534;} .pill.neu {background: #fef9c3; color: #854d0e;} .pill.neg {background: #fee2e2; color: #991b1b;}
+.sentbar {display: flex; height: 14px; border-radius: 7px; overflow: hidden; margin: .2rem 0 .8rem;}
+</style>
+"""
+
 
 # ----------------------------------------------------------------------------- helpers
-class LiveLog(io.TextIOBase):
-    """Shows the progress of a run: one short line per finished stage ("[themes] 12.4s"). The pipeline's other messages (layout found,
-    spelling repaired, ...) are left out, and the lines wrap instead of running off the edge of the box."""
-
-    def __init__(self, box, keep=8):
-        self.box, self.buf, self.lines, self.keep = box, "", [], keep
-
-    def write(self, s):
-        self.buf += s
-        *done, self.buf = self.buf.split("\n")                    # only complete lines
-        shown = [ln.strip() for ln in done if ln.strip().startswith("[") or ln.strip().startswith("total")]
-        if shown:
-            self.lines = (self.lines + shown)[-self.keep:]
-            self.box.code("\n".join(self.lines), language=None, wrap_lines=True)
-        return len(s)
-
-
 def ss(key, default):
     if key not in st.session_state:
         st.session_state[key] = default
@@ -199,19 +208,20 @@ def run_stage(cfg: dict, edits: dict, until: str, force=False, slot=None):
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg_path = run_dir / "config.yaml"
     cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
-    with (slot if slot is not None else st).status(f"Running up to '{until}'…", expanded=True) as status:
-        log = LiveLog(st.empty())
+    with (slot if slot is not None else st).spinner("Running…"):
         try:
-            with contextlib.redirect_stdout(log):
+            with contextlib.redirect_stdout(io.StringIO()):                # progress lines are not shown, only that it is running
                 # for the themes step also run assign (it takes a moment): the table then shows how often each theme really occurs
                 art = pipeline.run(str(cfg_path), "assign" if until == "themes" else until, force, overrides=overrides_for(cfg, edits))
         except Exception as e:                  # shown as a message on the page instead of crashing the app
-            status.update(label="That could not be applied", state="error")
-            msg = str(e) if isinstance(e, ValueError) else f"{type(e).__name__}: {e}"
+            if isinstance(e, ValueError):
+                msg = str(e)
+            else:                               # name where it was raised: an empty message (e.g. EOFError) says nothing alone
+                fr = traceback.extract_tb(e.__traceback__)[-1]
+                msg = f"{type(e).__name__}: {e} (at {Path(fr.filename).name}:{fr.lineno}, in {fr.name})"
             if "unknown theme" in msg:
                 msg += "  (The table on screen is out of date. Press 'Find themes' again and redo the edit.)"
             raise ValueError(msg) from e
-        status.update(label="Done", state="complete", expanded=False)
     if until == "themes":                       # the table of themes has new rows: give its editor a fresh state
         st.session_state.art_sig = settings_sig(cfg, edits)
         st.session_state.table_version = st.session_state.get("table_version", 0) + 1
@@ -243,8 +253,22 @@ def colour_cell(v):
 
 
 # ----------------------------------------------------------------------------- page
-st.title("Survey themes and sentiment")
-st.caption("Open-ended answers in, themes and a Positive / Negative / Neutral rating per theme out.")
+st.markdown(CSS, unsafe_allow_html=True)
+st.markdown("""
+<div class="hero">
+  <h1>Survey themes and sentiment</h1>
+</div>
+""", unsafe_allow_html=True)
+
+
+def sentiment_bar(pos, neu, neg):
+    """A thin stacked bar with the share of Positive / Neutral / Negative, and a legend of pills with the counts."""
+    tot = max(pos + neu + neg, 1)
+    st.markdown(
+        f'<div class="sentbar"><div style="width:{pos / tot:.1%};background:#43a047"></div>'
+        f'<div style="width:{neu / tot:.1%};background:#f9a825"></div><div style="width:{neg / tot:.1%};background:#e53935"></div></div>'
+        f'<span class="pill pos">Positive {pos:,} ({pos / tot:.0%})</span><span class="pill neu">Neutral {neu:,} ({neu / tot:.0%})</span>'
+        f'<span class="pill neg">Negative {neg:,} ({neg / tot:.0%})</span>', unsafe_allow_html=True)
 
 
 @st.cache_resource(show_spinner="Loading the language tools. This takes about 30 seconds the first time the app starts.")
@@ -257,25 +281,18 @@ def backend():
 
 export, ingest, pipeline = backend()
 
-tab_data, tab_themes, tab_results = st.tabs(["1 · Data", "2 · Themes and analysis", "3 · Results"])
+TAB_RESULTS = "3 · Results"
+tab_data, tab_themes, tab_results = st.tabs(["1 · Data", "2 · Themes and analysis", TAB_RESULTS], key="main_tabs", on_change="rerun")
 
 # ----------------------------------------------------------------------------- 1. data
 with tab_data:
-    left, right = st.columns([1, 2])
+    left, right = st.columns([1, 2], gap="large")
     with left:
-        source = st.radio("Where is the file?", ["Upload a file", "Pick from the data folder"], horizontal=True)
+        st.subheader("Your file")
         path = None
-        if source == "Upload a file":
-            up = st.file_uploader("Excel or CSV", type=["xlsx", "xls", "csv"])
-            if up is not None:
-                path = save_upload(up)
-        else:
-            found = sorted(glob.glob(str(ROOT / "data" / "*.xlsx")) + glob.glob(str(ROOT / "data" / "*.xls"))
-                           + glob.glob(str(ROOT / "data" / "*.csv")))
-            if found:
-                path = st.selectbox("File", found, format_func=lambda p: Path(p).name)
-            else:
-                st.info("No files in the data folder yet.")
+        up = st.file_uploader("Excel or CSV", type=["xlsx", "xls", "csv"])
+        if up is not None:
+            path = save_upload(up)
         sheet, header = 0, "auto"
         if path and path.lower().endswith((".xlsx", ".xls")):
             names = sheet_names(path, os.path.getmtime(path))
@@ -291,30 +308,22 @@ with tab_data:
     c_in = {"path": path, "header_row": header, "sheet": sheet}
     found_layout = ingest.detect_layout(df, c_in)
     with right:
-        st.write(f"**{len(df):,} rows, {df.shape[1]} columns**")
+        st.subheader("Preview")
+        st.caption(f"{len(df):,} rows · {df.shape[1]} columns · first 8 rows shown")
         st.dataframe(df.head(8).astype(str), width="stretch", height=250)
 
-    st.subheader("What is in the file")
-    c1, c2 = st.columns(2)
-    layout_label = {"long": "One comment per row (a column says which question it answers)",
-                    "wide": "One column per question (one row per respondent)"}
-    layout = c1.radio("Layout", ["long", "wide"], index=0 if found_layout["layout"] == "long" else 1,
-                      format_func=layout_label.get, help="Detected automatically. Change it if it looks wrong.")
+    layout = found_layout["layout"]                                     # detected automatically; nothing to choose on the page
     cols = list(df.columns)
     question_col = text_col = None
     text_cols = []
     if layout == "long":
-        qd = found_layout["question_col"] or cols[0]
-        td = found_layout["text_col"] or cols[-1]
-        question_col = c2.selectbox("Column that names the question", cols, index=cols.index(qd) if qd in cols else 0)
-        text_col = c2.selectbox("Column with the comments", cols, index=cols.index(td) if td in cols else 0)
+        question_col, text_col = found_layout["question_col"], found_layout["text_col"]
         questions = [str(x) for x in df[question_col].dropna().astype(str).unique()]
-        c2.write("Questions found:  " + ",  ".join(f"**{q}** ({(df[question_col].astype(str) == q).sum()})" for q in questions))
     else:
-        text_cols = c2.multiselect("Open-ended columns", cols, default=[x for x in found_layout["text_cols"] if x in cols])
+        text_cols = [x for x in found_layout["text_cols"] if x in cols]
         questions = [str(x) for x in text_cols]
     if not questions:
-        st.warning("No open-ended questions found yet. Pick the columns that hold the written answers.")
+        st.warning("No open-ended questions were found in this file.")
         st.stop()
 
     st.subheader("Settings")
@@ -337,8 +346,7 @@ with tab_data:
     bx.number_input("Themes (type)", 2, 100, key="n_box", label_visibility="collapsed",
                     on_change=_box_to_slider)
     n_themes = int(st.session_state.n_box)
-    s1.caption(f"{n_themes} themes + {n_general(preset)} general-comment theme for remarks that name no topic.")
-    req_text = s1.text_area("Extra themes that must be included (one per line, optional words after a colon)",
+    req_text = s1.text_area("Themes that must be included",
                             value="\n".join(r["name"] + (": " + ", ".join(r["keywords"]) if r.get("keywords") else "")
                                             for r in edits["required"]),
                             placeholder="Price: cost, expensive, cheap\nPackaging", height=110)
@@ -375,6 +383,17 @@ with tab_themes:
         edits["ops"] = []
         st.session_state.auto_find = True
 
+    if st.session_state.pop("run_analysis", False):
+        # Runs before the theme editors are drawn: otherwise the old Merge / Add sections stay on screen while it works and show twice.
+        try:
+            st.session_state.final = run_stage(cfg, edits, "export")
+            st.session_state.result_dir = cfg["run_dir"]
+            st.session_state.analysis_done = True
+        except ValueError as e:
+            st.error(str(e))
+        else:
+            st.rerun()
+
     go1, go2 = st.columns([1, 3])
     if go1.button("Find themes", type="primary") or "art" not in st.session_state and st.session_state.get("auto_find"):
         st.session_state.auto_find = True
@@ -396,55 +415,46 @@ with tab_themes:
     if art and "themes" in art:
         table = themes_table(art)
         all_themes = [t for ts, _ in art["themes"].values() for t in ts]
-        found_n = max((t.get("candidates_found") or 0 for t in all_themes), default=0)
-        fixed_n = sum(1 for t in all_themes if t.get("required") or t.get("seeded"))     # from the preset or typed on the Data tab
-        found_kept = len(all_themes) - fixed_n
-        parts = []
-        if found_n:
-            parts.append(f"**{found_n} topics were found in the answers; {found_kept} of them are kept** (the others were merged into the nearest kept one)")
-        if fixed_n:
-            parts.append(f"**{fixed_n} built-in or added theme{'s' if fixed_n != 1 else ''}** (general comments, plus any you typed)")
-        if parts:
-            st.write(" and ".join(parts) + f". The table shows all {len(table)}.")
-        edited = st.data_editor(
-            table.drop(columns="_orig"), key=f"theme_table_{st.session_state.get('table_version', 0)}", hide_index=True, width="stretch",
-            column_config={"Keep": st.column_config.CheckboxColumn("Keep", width="small"),
-                           "Theme": st.column_config.TextColumn("Theme (click to rename)"),
-                           "Answers": st.column_config.NumberColumn("Answers", disabled=True,
-                                                                    help="How many different answers were assigned to this theme"),
-                           "Main words": st.column_config.TextColumn("Main words", disabled=True)})
+        tv = st.session_state.get("table_version", 0)              # new key whenever the themes change: a kept widget would still show the old names
+        st.dataframe(table.drop(columns=["_orig", "Keep"]), hide_index=True, width="stretch")
 
-        e1, e2, e3 = st.columns(3)
+        names = list(table["Theme"])
+        e1, e2, e3, e4 = st.columns(4)
         progress = st.container()                                  # full width, right under the buttons: where the progress of an edit shows
         with e1:
-            st.markdown("**Rename or remove**")
-            st.caption("Rename in the table, untick Keep to remove, then apply.")
-            if st.button("Apply table changes"):
-                new_ops = []
-                for old, row in zip(table["_orig"], edited.itertuples()):
-                    if not row.Keep:
-                        new_ops.append(["drop", old])
-                    elif row.Theme.strip() and row.Theme != old:
-                        new_ops.append(["rename", old, row.Theme.strip()])
-                if new_ops:
-                    edits["ops"] += new_ops
-                    try:
-                        st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
-                        st.rerun()
-                    except ValueError as e:
-                        edits["ops"] = edits["ops"][:-len(new_ops)]
-                        st.error(str(e))
+            st.markdown("**Rename a theme**")
+            old_name = st.selectbox("Theme", names, key=f"rename_old_{tv}")
+            new_name = st.text_input("New name", key=f"rename_new_{tv}")
+            if st.button("Rename") and new_name.strip() and new_name.strip() != old_name:
+                edits["ops"].append(["rename", old_name, new_name.strip()])
+                try:
+                    st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
+                    st.rerun()
+                except ValueError as e:
+                    edits["ops"].pop()
+                    st.error(str(e))
         with e2:
+            st.markdown("**Remove themes**")
+            drop_pick = st.multiselect("Themes to remove", names, key=f"remove_pick_{tv}")
+            if st.button("Remove") and drop_pick:
+                new_ops = [["drop", n] for n in drop_pick]
+                edits["ops"] += new_ops
+                try:
+                    st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
+                    st.rerun()
+                except ValueError as e:
+                    edits["ops"] = edits["ops"][:-len(new_ops)]
+                    st.error(str(e))
+        with e3:
             st.markdown("**Merge themes**")
-            names = list(table["Theme"])
-            pick = st.multiselect("Themes to merge", names, key="merge_pick")
-            merged_name = st.text_input("Name of the merged theme", key="merge_name")
+            pick = st.multiselect("Themes to merge", names, key=f"merge_pick_{tv}")
+            merged_name = st.text_input("Name of the merged theme", key=f"merge_name_{tv}")
             if st.button("Merge"):
                 built_in = {t["theme_name"] for t in all_themes if t.get("required") or t.get("seeded")}
                 if len(pick) < 2:
                     st.warning("Pick at least two themes to merge.")
                 elif built_in & set(pick):
-                    st.warning("Built-in and added themes ({}) cannot be merged. Merge themes found in the answers, or untick Keep to remove one."
+                    st.warning("Built-in and added themes ({}) cannot be merged. Merge themes found in the answers, or use Remove."
                                .format(", ".join(sorted(built_in & set(pick)))))
                 else:
                     edits["ops"].append(["merge", merged_name.strip() or None, pick])
@@ -454,7 +464,7 @@ with tab_themes:
                     except ValueError as e:
                         edits["ops"].pop()
                         st.error(str(e))
-        with e3:
+        with e4:
             st.markdown("**Add a theme**")
             add_name = st.text_input("Theme name", key="add_name")
             add_kw = st.text_input("Words that signal it (optional, comma-separated)", key="add_kw")
@@ -479,13 +489,13 @@ with tab_themes:
                                      "merge": "Merged {2} into {1}"}[op[0]].format(*op).replace("[", "").replace("]", "").replace("'", ""))
 
         st.divider()
+        if st.session_state.get("analysis_done"):
+            st.success("Finished. Open the **Results** tab.")
+            st.button("Go to results", on_click=lambda: st.session_state.update(main_tabs=TAB_RESULTS))
         if st.button("Run the analysis", type="primary"):
-            try:
-                st.session_state.final = run_stage(cfg, edits, "export")
-                st.session_state.result_dir = cfg["run_dir"]
-                st.success("Finished. Open the **Results** tab.")
-            except ValueError as e:
-                st.error(str(e))
+            st.session_state.analysis_done = False
+            st.session_state.run_analysis = True          # the run happens at the top of the next script pass, before the editors are drawn
+            st.rerun()
 
 # ----------------------------------------------------------------------------- 3. results
 with tab_results:
@@ -502,7 +512,7 @@ with tab_results:
         st.warning("The standard results file is open in Excel, so this run was saved under a different name.")
 
     # headline numbers
-    m = st.columns(4)
+    m = st.columns(4, gap="medium")
     n_answers = sum(len(sheets[q]) for q in question_sheets)
     themed = sum(int((sheets[q][[c for c in sheets[q].columns if c not in NOT_THEMES]].notna().any(axis=1)).sum())
                  for q in question_sheets)
@@ -511,33 +521,44 @@ with tab_results:
     m[2].metric("Questions", len(question_sheets))
     m[3].metric("Themes", len(sheets["themes"]))
 
-    qtabs = st.tabs(question_sheets)
-    for qt, qname in zip(qtabs, question_sheets):
-        with qt:
-            d = sheets[qname]
-            theme_cols = [c for c in d.columns if c not in NOT_THEMES]
-            counts = pd.DataFrame({c: d[c].value_counts() for c in theme_cols}).T.reindex(
-                columns=["Positive", "Neutral", "Negative"]).fillna(0).astype(int)
-            counts = counts.assign(total=counts.sum(axis=1)).sort_values("total", ascending=False).drop(columns="total")
-            ov = d["Overall"].value_counts().reindex(["Positive", "Neutral", "Negative"]).fillna(0).astype(int)
-            g1, g2 = st.columns([2, 1])
-            with g1:
-                st.markdown("**How each theme is rated**")
-                st.bar_chart(counts, color=["#43a047", "#f9a825", "#e53935"],
-                             horizontal=True, height=max(220, 34 * len(counts)))
-            with g2:
-                st.markdown("**Whole answers**")
-                st.bar_chart(ov.to_frame("answers"), color="#5c6bc0", height=260)
-            f1, f2 = st.columns(2)
-            only = f1.multiselect("Show answers about", theme_cols, key=f"flt_{qname}")
-            word = f2.text_input("Search the answer text", key=f"srch_{qname}")
-            view = d
-            if only:
-                view = view[view[only].notna().any(axis=1)]
-            if word:
-                view = view[view["Answer"].astype(str).str.contains(word, case=False, na=False)]
-            st.write(f"{len(view):,} answers")
-            st.dataframe(view.style.map(colour_cell), width="stretch", height=520, hide_index=True)
+    shown = st.multiselect("Show questions", question_sheets, default=question_sheets, key="flt_questions")
+    if not shown:
+        st.info("Pick at least one question to show.")
+        st.stop()
+
+    # one set of graphs per question, side by side (a new row after every three questions)
+    for start in range(0, len(shown), 3):
+        row = shown[start:start + 3]
+        for col, qname in zip(st.columns(len(row), gap="medium"), row):
+            with col:
+                d = sheets[qname]
+                theme_cols = [c for c in d.columns if c not in NOT_THEMES]
+                counts = pd.DataFrame({c: d[c].value_counts() for c in theme_cols}).T.reindex(
+                    columns=["Positive", "Neutral", "Negative"]).fillna(0).astype(int)
+                counts = counts.assign(total=counts.sum(axis=1)).sort_values("total", ascending=False).drop(columns="total")
+                ov = d["Overall"].value_counts().reindex(["Positive", "Neutral", "Negative"]).fillna(0).astype(int)
+                st.subheader(qname)
+                sentiment_bar(int(ov["Positive"]), int(ov["Neutral"]), int(ov["Negative"]))
+                with st.container(border=True):
+                    st.markdown("**How each theme is rated**")
+                    st.bar_chart(counts, color=["#43a047", "#f9a825", "#e53935"],
+                                 horizontal=True, height=max(220, 34 * len(counts)))
+
+    # all shown questions in one table, with the question named in the first column
+    combined = pd.concat([sheets[q].assign(Question=q) for q in shown], ignore_index=True)
+    combined = combined[["Question"] + [c for c in combined.columns if c != "Question"]]
+    all_theme_cols = [c for c in combined.columns if c not in NOT_THEMES and c != "Question"]
+    st.subheader("Answers")
+    f1, f2 = st.columns(2)
+    only = f1.multiselect("Show answers about", all_theme_cols, key="flt_themes")
+    word = f2.text_input("Search the answer text", key="srch_text")
+    view = combined
+    if only:
+        view = view[view[only].notna().any(axis=1)]
+    if word:
+        view = view[view["Answer"].astype(str).str.contains(word, case=False, na=False)]
+    st.write(f"{len(view):,} answers")
+    st.dataframe(view.style.map(colour_cell), width="stretch", height=520, hide_index=True)
 
     st.divider()
     d1, d2 = st.columns(2)
