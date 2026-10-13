@@ -170,6 +170,10 @@ def run(art, cfg, timings):
         if not spec and o.get("neutral_phrases"):          # lukewarm answers ("okay", "nothing special") are Neutral, whatever the question
             lw = sentiment.lukewarm(Lq["text_clean"], o["neutral_phrases"], valence, o.get("neutral_blockers")).astype(bool)
             Lq = Lq.assign(overall_code=Lq["overall_code"].astype(float).where(~lw, float(codes["neutral"])))
+        # every response gets a rating: a non-answer ("N/A", "None", "Nothing") says nothing for or against, so it is Neutral.
+        # Only a cell that is really empty has no response and stays blank.
+        has_text = Lq["text_clean"].fillna("").str.len() > 0
+        Lq = Lq.assign(overall_code=Lq["overall_code"].astype(float).where(~has_text | Lq["overall_code"].notna(), float(codes["neutral"])))
         if o["include_overall"]:
             out[f"{pre}Overall"] = out.row_id.map(Lq["overall_code"]).astype("Int64")
             qcols[name].append((f"{pre}Overall", "Overall"))
@@ -276,7 +280,7 @@ def run(art, cfg, timings):
             qdf.columns = other + [h for _, h in cols]
             if long_mode:
                 qdf = qdf[qdf["Answer"].notna()]                            # only this question's own rows
-            stacked.append(qdf[qdf["Answer"].notna()].assign(Question=name))
+            stacked.append(qdf.assign(Question=name))                       # wide: every respondent stays, so Combined = sum of the sheets
             sn = sheet_name(name)
             qdf.to_excel(xw, sheet_name=sn, index=False)
             ws = xw.sheets[sn]

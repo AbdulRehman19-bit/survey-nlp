@@ -5,6 +5,10 @@ from pathlib import Path
 import pandas as pd
 from .util import sha
 
+# pandas turns the words "N/A", "None", "NA", "null" into missing values. In a survey they are answers ("None" = no complaint), so only
+# really empty cells count as missing.
+KEEP_TEXT = {"keep_default_na": False, "na_values": [""]}
+
 
 def detect_text_cols(df: pd.DataFrame, c: dict) -> list:
     """Heuristic: string columns with longish, mostly-unique answers are open-ended."""
@@ -30,12 +34,19 @@ def detect_text_cols(df: pd.DataFrame, c: dict) -> list:
 def guess_header_row(raw: pd.DataFrame, max_rows: int = 15) -> int:
     """The header is the earliest row (of the first few) that holds the most distinct text cells. Exports often start
     with metadata rows (survey id, section names) that have fewer distinct labels than the real column-name row."""
-    best, best_n = 0, -1
+    def machine_like(row):          # a row of field ids ("user_id", "q-id-6ac8…-value"): one token each, with _ - or digits
+        s = row.astype(str).str.strip()
+        return (s.str.contains(r"\s").eq(False) & s.str.contains(r"[_\-0-9]")).mean() >= 0.8
+
+    cands = []
     for i in range(min(max_rows, len(raw))):
         row = raw.iloc[i].dropna()
         if row.empty or row.map(lambda x: isinstance(x, str)).mean() < 0.8:
             continue
-        n = row.astype(str).str.strip().nunique()
+        cands.append((i, row.astype(str).str.strip().nunique(), machine_like(row)))
+    readable = [c for c in cands if not c[2]] or cands      # the question texts are the header, not the id row under them
+    best, best_n = 0, -1
+    for i, n, _ in readable:
         if n > best_n:
             best, best_n = i, n
     return best
@@ -76,7 +87,7 @@ def _read_csv(p, header_row=0) -> pd.DataFrame:
                 lines = [fh.readline() for _ in range(hdr + 1)]
             first = lines[-1]
             sep = max(",;	|", key=first.count) if any(first.count(d) for d in ",;	|") else ","
-            return pd.read_csv(p, sep=sep, encoding=enc, header=hdr)
+            return pd.read_csv(p, sep=sep, encoding=enc, header=hdr, **KEEP_TEXT)
         except UnicodeDecodeError:
             continue
     raise ValueError(f"The file {Path(p).name} could not be read as text. Save it as CSV UTF-8 or as an Excel file.")
@@ -89,9 +100,9 @@ def read_table(c: dict) -> pd.DataFrame:
         return _read_csv(p, c.get("header_row", 0))
     hdr = c.get("header_row", 0)
     if hdr == "auto":
-        hdr = guess_header_row(pd.read_excel(p, sheet_name=c.get("sheet", 0), header=None, nrows=15))
+        hdr = guess_header_row(pd.read_excel(p, sheet_name=c.get("sheet", 0), header=None, nrows=15, **KEEP_TEXT))
     skip = [hdr + 1 + i for i in range(c.get("skip_rows", 0))]   # junk rows right under the header
-    return pd.read_excel(p, sheet_name=c.get("sheet", 0), header=hdr, skiprows=skip)
+    return pd.read_excel(p, sheet_name=c.get("sheet", 0), header=hdr, skiprows=skip, **KEEP_TEXT)
 
 
 def _drop_id_row(df: pd.DataFrame, text_cols: list) -> pd.DataFrame:

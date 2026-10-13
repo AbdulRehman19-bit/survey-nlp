@@ -429,15 +429,19 @@ with tab_themes:
         edits["ops"] = []
         st.session_state.auto_find = True
 
-    if st.session_state.pop("run_analysis", False):
+    if st.session_state.get("run_analysis"):
         # Runs before the theme editors are drawn: otherwise the old Merge / Add sections stay on screen while it works and show twice.
+        # The flag stays set until the run has finished: switching tabs reruns the page and interrupts it, and the next pass then
+        # carries on (finished stages are cached) instead of silently dropping the analysis.
         try:
             st.session_state.final = run_stage(cfg, edits, "export")
             st.session_state.result_dir = cfg["run_dir"]
             st.session_state.analysis_done = True
         except ValueError as e:
+            st.session_state.run_analysis = False
             st.error(str(e))
         else:
+            st.session_state.run_analysis = False
             st.rerun()
 
     go1, go2 = st.columns([1, 3])
@@ -557,11 +561,12 @@ with tab_results:
     run_dir = st.session_state.get("result_dir") or (s["run_dir"] if s else None)
     f = latest_results(run_dir) if run_dir else None
     if not f:
-        st.info("Run the analysis in the previous tab to see results here.")
+        st.info("The analysis is still running." if st.session_state.get("run_analysis")
+                else "Run the analysis in the previous tab to see results here.")
         st.stop()
     for attempt in range(5):                       # the file may still be being written (a run just finished): wait and read again
         try:
-            sheets = pd.read_excel(f, sheet_name=None)
+            sheets = pd.read_excel(f, sheet_name=None, keep_default_na=False, na_values=[""])      # "N/A" / "None" answers stay as text
             break
         except (zipfile.BadZipFile, EOFError):         # a half-written .xlsx raises either one
             if attempt == 4:
@@ -575,7 +580,7 @@ with tab_results:
 
     # headline numbers
     m = st.columns(4, gap="medium")
-    n_answers = sum(len(sheets[q]) for q in question_sheets)
+    n_answers = sum(len(sheets[q]) for q in question_sheets)                             # every respondent row, as in the file
     themed = sum(int((sheets[q][[c for c in sheets[q].columns if c not in NOT_THEMES]].notna().any(axis=1)).sum())
                  for q in question_sheets)
     m[0].metric("Answers", f"{n_answers:,}")
