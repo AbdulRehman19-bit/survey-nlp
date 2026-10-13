@@ -117,3 +117,19 @@ def test_a_word_not_written_by_a_person_needs_some_closeness_in_meaning_and_does
     assert run(clauses, E, themes, C, {"assign": {**base, "keyword_min_sim": 0}}).clause_id.tolist() == [0, 1]
     mine = [{"theme_name": "Pieces", "keywords": [], "curated_keywords": ["pieces"]}]
     assert run(clauses, E, mine, C, {"assign": base}).clause_id.tolist() == [0, 1]                   # a word you wrote always counts
+
+
+def test_a_merged_theme_covers_every_part_and_a_new_name_does_not_change_what_matches():
+    clauses = pd.DataFrame({"clause_id": [0, 1, 2], "clause": ["one", "two", "three"]})
+    E = np.array([[1, 0], [0, 1], [-1, 0]], np.float32)
+    C = np.array([[0.7071, 0.7071], [-1, 0]], np.float32)                      # the merged centre sits between the two parts
+    cfg = {"assign": {"min_sim": 0.9, "secondary_margin": 0.03, "keyword_min_len": 3}}
+    themes = [{"theme_name": "Both", "keywords": []}, {"theme_name": "Other", "keywords": []}]
+    assert run(clauses, E, themes, C, cfg).theme_idx.tolist() == [1]           # without the parts' centres only one clause is close enough
+    themes[0]["sub_centres"] = [[1, 0], [0, 1]]
+    out = run(clauses, E, themes, C, cfg)
+    assert sorted(zip(out.clause_id, out.theme_idx)) == [(0, 0), (1, 0), (2, 1)]
+    clauses = pd.DataFrame({"clause_id": [0], "clause": ["it feels refreshing"]})
+    t = [{"theme_name": "Sugary", "match_name": "Refreshing", "keywords": [], "assign_keywords": ["refreshing"]}]
+    assert run(clauses, np.array([[0.5, 0.5]], np.float32), t, np.array([[1, 0]], np.float32),
+               {"assign": {"min_sim": 0.9, "secondary_margin": 0.03, "keyword_min_len": 3, "keyword_min_sim": 0}}).theme_idx.tolist() == [0]

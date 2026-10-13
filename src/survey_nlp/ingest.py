@@ -66,11 +66,27 @@ def detect_layout(df: pd.DataFrame, c: dict) -> dict:
     return {"layout": "wide", "question_col": None, "text_col": None, "text_cols": text_cols}
 
 
+def _read_csv(p, header_row=0) -> pd.DataFrame:
+    """A CSV in whatever encoding Excel saved it in (UTF-8 with or without BOM, else Windows-1252) and with the delimiter it used
+    (comma, semicolon, tab or pipe: the one that appears most in the first line). The header row is the number given; "auto" = the first."""
+    hdr = header_row if isinstance(header_row, int) else 0
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            with open(p, encoding=enc) as fh:
+                lines = [fh.readline() for _ in range(hdr + 1)]
+            first = lines[-1]
+            sep = max(",;	|", key=first.count) if any(first.count(d) for d in ",;	|") else ","
+            return pd.read_csv(p, sep=sep, encoding=enc, header=hdr)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"The file {Path(p).name} could not be read as text. Save it as CSV UTF-8 or as an Excel file.")
+
+
 def read_table(c: dict) -> pd.DataFrame:
     """Read the file. input.header_row may be a number or "auto"."""
     p = c["path"]
     if not p.lower().endswith((".xlsx", ".xls")):
-        return pd.read_csv(p)
+        return _read_csv(p, c.get("header_row", 0))
     hdr = c.get("header_row", 0)
     if hdr == "auto":
         hdr = guess_header_row(pd.read_excel(p, sheet_name=c.get("sheet", 0), header=None, nrows=15))
@@ -183,5 +199,6 @@ def run(cfg):
         valid &= ~clean.map(na).fillna(False).astype(bool)
     long["text_clean"] = clean
     long["valid"] = valid
+    long.attrs["long_format"] = long_format      # the export needs to know, also when the layout was detected here and not written in the config
     long["text_key"] = [sha(t.lower()) if v else "" for t, v in zip(clean, valid)]
     return long, base

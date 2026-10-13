@@ -543,3 +543,23 @@ def test_a_name_is_judged_by_how_much_more_the_theme_uses_it_than_the_rest_of_th
     c = {"name_min_coverage": 0.10, "name_min_lift": 2.0}
     assert th._name_passes(index, "Adverts", members, c) and not th._name_passes(index, "Taste", members, c)
     assert th._name_passes(index, "Login", members, c)
+
+
+def test_edits_on_a_theme_you_added_reach_a_found_theme_of_that_name_only_when_there_is_one():
+    mk = lambda: ([{"theme_name": n, "keywords": [], "frequency": 1} for n in ("Bottle", "Water")], [np.array([0]), np.array([1])])
+    c = {"n_keywords": 8, "min_themes": 1, "curation": {"ops": [["rename_if_present", "Bottle", "Packaging"], ["drop_if_present", "Price"]]}}
+    t, _ = th._curate(*mk(), c)
+    assert [x["theme_name"] for x in t] == ["Packaging", "Water"]            # "Price" is not there: nothing to do, no error
+    c["curation"]["ops"] = [["drop_if_present", "bottle"]]
+    t, _ = th._curate(*mk(), c)
+    assert [x["theme_name"] for x in t] == ["Water"]
+
+
+def test_a_merged_theme_remembers_the_centres_of_its_parts_and_a_rename_keeps_the_match_name():
+    Ec = np.array([[1, 0], [1, 0.1], [0, 1], [0.1, 1], [-1, 0]], np.float32)
+    themes = [{"theme_name": n, "match_name": n, "keywords": [], "frequency": 2} for n in ("A", "B", "C")]
+    merged = [np.array([0, 1]), np.array([2, 3]), np.array([4])]
+    c = {"n_keywords": 8, "min_themes": 1, "curation": {"ops": [["merge", "AB", ["A", "B"]], ["merge", "ABC", ["AB", "C"]], ["rename", "ABC", "All"]]}}
+    t, m = th._curate(themes, merged, c)
+    assert len(t) == 1 and t[0]["theme_name"] == "All" and t[0]["match_name"] == "A"
+    assert [p.tolist() for p in t[0]["_parts"]] == [[0, 1], [2, 3], [4]]     # parts of parts are flattened, not nested

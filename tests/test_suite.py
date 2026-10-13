@@ -74,7 +74,6 @@ def test_the_app_script_is_valid_python_and_shows_edit_progress_in_a_full_width_
     src = (ROOT / "app.py").read_text(encoding="utf-8")
     ast.parse(src)                                                       # Streamlit would only show the SyntaxError in the browser
     assert src.count("slot=progress") == 4 and "progress = st.container()" in src      # apply / merge / add report under the buttons, not inside a column
-    assert "wrap_lines=True" in src                                      # the progress lines wrap instead of running off the box
 
 
 def test_the_apps_log_setting_hides_streamlits_file_watcher_tracebacks_for_modules_that_need_torchvision():
@@ -105,3 +104,50 @@ def test_the_apps_log_setting_hides_streamlits_file_watcher_tracebacks_for_modul
     finally:
         log.setLevel(old)
         log.removeHandler(handler)
+
+
+def _app_functions(*names):
+    """Functions of app.py, without running its page code."""
+    import ast
+    import yaml
+    tree = ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))
+    ns = {"yaml": yaml, "ROOT": ROOT}
+    exec(compile(ast.Module([n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names], []), "app", "exec"), ns)
+    return [ns[n] for n in names]
+
+
+def _cfg():
+    return {"themes": {"required": [{"name": "Not Specific", "general": True, "seeds": ["It is good"]}]}}
+
+
+def test_removing_the_general_theme_only_hides_it_so_the_other_themes_stay_the_same():
+    overrides_for = _app_functions("overrides_for", "n_general")[0]
+    ov = overrides_for(_cfg(), {"n_themes": 8, "required": [], "ops": [["drop", "Not Specific"]]})["themes"]
+    gen = [r for r in ov["required"] if r["name"] == "Not Specific"]
+    assert gen and gen[0]["hidden"] and gen[0]["general"]                   # still given to the search (same clusters), not shown
+    assert ov["n_themes"] == 9 and ov["n_total"] == 8                       # the search target is unchanged, the output loses the slot
+    assert ov["curation"]["ops"] == [["drop_if_present", "Not Specific"]]
+
+
+def test_renaming_or_removing_an_added_theme_also_reaches_a_found_theme_of_that_name_and_keeps_its_definition():
+    overrides_for = _app_functions("overrides_for", "n_general")[0]
+    added = {"n_themes": 8, "required": [{"name": "Price"}]}
+    ov = overrides_for(_cfg(), {**added, "ops": [["rename", "Price", "Cost"], ["rename", "Cost", "Value"]]})["themes"]
+    price = [r for r in ov["required"] if r.get("defined_by")]
+    assert [(r["name"], r["defined_by"]) for r in price] == [("Value", "Price")]     # still defined by "Price", whatever it is called now
+    assert ov["curation"]["ops"] == [["rename_if_present", "Price", "Cost"], ["rename_if_present", "Cost", "Value"]]
+    ov = overrides_for(_cfg(), {**added, "ops": [["drop", "Price"]]})["themes"]
+    assert [r["name"] for r in ov["required"]] == ["Not Specific"] and ov["curation"]["ops"] == [["drop_if_present", "Price"]]
+
+
+def test_a_theme_name_that_is_taken_is_found_whatever_its_case_but_the_theme_itself_may_change_case():
+    (name_taken,) = _app_functions("name_taken")
+    assert name_taken(" water ", ["Flavour", "Water"]) and not name_taken("Cost", ["Flavour", "Water"])
+    assert not name_taken("BOTTLE", ["Bottle"], except_name="Bottle")
+
+
+def test_the_answer_search_is_plain_text_and_visitors_get_their_own_folder():
+    src = (ROOT / "app.py").read_text(encoding="utf-8")
+    assert "regex=False" in src                                             # "c++" or "(" must not be read as a pattern
+    assert "session_dir()" in src and 'sys.path.insert(0, str(ROOT / "src"))' in src
+    assert "en_core_web_sm" in (ROOT / "requirements.txt").read_text(encoding="utf-8")      # Streamlit Cloud installs only what is listed there

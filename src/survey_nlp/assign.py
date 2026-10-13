@@ -22,7 +22,7 @@ def _name_words(themes, c):
     """For every theme, the words of its own name that are distinctive: a theme called "Refreshing Taste" is matched by the word
     "refreshing" but not by "taste" (the name of another theme, shared by many clauses). Only words the discovery found frequent in
     the theme and clearly rarer elsewhere (its assign_keywords) are used, so a name never turns into a noisy keyword."""
-    words = [set(re.findall(r"[a-z']+", t["theme_name"].lower().split(" & ")[0])) for t in themes]       # a joined name: its first topic only
+    words = [set(re.findall(r"[a-z']+", t.get("match_name", t["theme_name"]).lower().split(" & ")[0])) for t in themes]       # a joined name: its first topic only. A name chosen later is only a label
     out = []
     for j, t in enumerate(themes):
         others = set().union(*[w for k, w in enumerate(words) if k != j and len(w) == 1])        # a word that is the whole name of another theme
@@ -41,6 +41,9 @@ def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
     if c.get("center"):                                 # themes.center: centres were built in this centred space, so score in it
         E = center(E, strength=cfg["themes"].get("center_strength", 1.0), axis=axis_of(cfg))
     S = E @ C.T                                         # all clauses x all themes in one matmul
+    for j, t in enumerate(themes):                      # a merged theme is as close as the closest of the themes it was made of
+        if t.get("sub_centres"):
+            S[:, j] = np.maximum(S[:, j], (E @ np.asarray(t["sub_centres"], np.float32).T).max(1))
     n = len(S)
     r = np.arange(n)
     order = np.argsort(-S, axis=1)[:, :2] if S.shape[1] > 1 else np.zeros((n, 2), int)

@@ -515,7 +515,7 @@ def _name_themes(clauses, merged, c, Ec=None, mu=None, cfg=None, ctx=None):
             share_all = all_texts.str.contains(r"\b" + re.escape(t) + r"\b", regex=True).mean()
             if share_in >= c.get("keyword_min_share", 0.10) and share_in >= c.get("keyword_min_lift", 2.0) * share_all:
                 match_kws.append(t)
-        out.append({"theme_name": name, "keywords": kws or terms[order[:c["n_keywords"]]].tolist(), "assign_keywords": match_kws[:c["n_keywords"]],
+        out.append({"theme_name": name, "match_name": name, "keywords": kws or terms[order[:c["n_keywords"]]].tolist(), "assign_keywords": match_kws[:c["n_keywords"]],
                     "frequency": int(len(m)), "n_informative": sum(1 for _, sh, _ in pool_terms if sh >= c.get("generic_term_share", 0.10))})
         if index is not None:
             out[-1]["name_coverage"] = round(quality.name_coverage(index, name, m, aliases), 3)
@@ -849,6 +849,7 @@ def _curate(themes, merged, c):
         if new:
             check_free(new, ids)
         keep = ids[0]
+        themes[keep]["_parts"] = [p for i in ids for p in (themes[i].get("_parts") or [merged[i]])]     # assignment keeps everything each part covered
         merged[keep] = np.concatenate([merged[i] for i in ids])
         kws = list(dict.fromkeys(k for i in ids for k in themes[i]["keywords"]))
         match = list(dict.fromkeys(k for i in ids for k in themes[i].get("assign_keywords", [])))
@@ -895,6 +896,12 @@ def _curate(themes, merged, c):
             set_name(op[1], op[2])
         elif kind == "drop":                                 # ["drop", name]
             themes[idx(op[1])]["_dead"] = True
+        elif kind in ("drop_if_present", "rename_if_present"):    # an edit on a theme you added by name: the answers may also have produced one of that name
+            if any(not t.get("_dead") and t["theme_name"].lower() == str(op[1]).strip().lower() for t in themes):
+                if kind == "rename_if_present":
+                    set_name(op[1], op[2])
+                else:
+                    kill(op[1])
     keep = [i for i, t in enumerate(themes) if not t.get("_dead")]
     if len(keep) < c["min_themes"] and not (c.get("required") and (cur.get("drop") or cur.get("ops"))):   # dropping every discovered theme is fine when the user's own themes fill the output
         raise ValueError(f"Only {len(keep)} themes left after curation.")
@@ -918,8 +925,7 @@ def _expand(vec, Ec, clauses, c, words=(), cfg=None, mu=None):
         sims = Ec @ centre
         strict = (sims >= thr) | (lexical & (sims >= 0.15))     # a word match alone is not enough: it must also be on topic
         if strict.sum() < c.get("required_min_members", 3):
-            strict = np.zeros(len(Ec), bool)
-            strict[np.argsort(-sims)[:c.get("required_min_members", 3)]] = True
+            return vec, [], np.array([], int)                    # nothing in the answers is about it: do not drift towards unrelated clauses
         centre = _unit(vec + _unit(Ec[strict].mean(0))).astype(np.float32)
     sims = Ec @ centre
     m = np.where(strict)[0]
@@ -965,11 +971,12 @@ def _apply_required(themes, C, mu, c, cfg, Ec=None, clauses=None):
     for r in c.get("required") or []:
         r = {"name": r} if isinstance(r, str) else dict(r)
         name = r["name"].strip()
-        if not name:
+        if not name or r.get("hidden"):                        # hidden = removed by the user, but it still shapes the search (see overrides_for in app.py)
             continue
+        base = (r.get("defined_by") or name).strip()           # a renamed theme is still defined by the name it was added with
         sem_only = bool(r.get("semantic_only"))                # no keywords at all, given or learned: matched by meaning only
-        kws = [] if sem_only else list(r.get("keywords") or re.findall(r"[A-Za-z']{3,}", name.lower()))
-        seeds = list(r.get("seeds") or _auto_seeds(name))
+        kws = [] if sem_only else list(r.get("keywords") or re.findall(r"[A-Za-z']{3,}", base.lower()))
+        seeds = list(r.get("seeds") or _auto_seeds(base))
         V = embed.encode_cached([sha("seed:" + x.lower()) for x in seeds], seeds, cfg)
         V = center(V, mu, c.get("center_strength", 1.0), axis_of(cfg)) if c.get("center") else V
         vec = _unit(V.mean(0)).astype(np.float32)
@@ -1007,7 +1014,7 @@ def _hand_made_members(clauses, Ec, mu, c, cfg):
     for r in c.get("required") or []:
         r = {"name": r} if isinstance(r, str) else dict(r)
         if r.get("name", "").strip():
-            name = r["name"].strip()
+            name = (r.get("defined_by") or r["name"]).strip()
             specs.append((list(r.get("seeds") or _auto_seeds(name)),
                           [] if r.get("semantic_only") else list(r.get("keywords") or re.findall(r"[A-Za-z']{3,}", name.lower()))))
     for name, spec in ((c.get("curation") or {}).get("add") or {}).items():
@@ -1158,6 +1165,10 @@ def discover(clauses, E, cfg):
                                               cfg["assign"].get("fallback_min_sim"), cfg["assign"].get("secondary_margin", 0.1)), ctx, c)
     themes, merged = _curate(themes, merged, c)
     C = np.stack([_unit(Ec[m].mean(0)) for m in merged]).astype(np.float32) if merged else np.zeros((0, Ec.shape[1]), np.float32)
+    for t in themes:
+        parts = t.pop("_parts", None)
+        if parts:                                                   # a merged theme keeps a centre for each theme it was made of
+            t["sub_centres"] = [np.round(_unit(Ec[p].mean(0)), 4).tolist() for p in parts]
     names = [t["theme_name"] for t in themes]
     for name, seeds in ((c.get("curation") or {}).get("seeds") or {}).items():
         # sharpen a broad discovered theme with example phrases: centroid = members' mean + seeds' mean

@@ -1,3 +1,13 @@
+---
+title: Survey Sentiment Analysis
+emoji: 📊
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 8501
+pinned: false
+---
+
 # Survey NLP: open-ended answers to themes and per-theme sentiment
 
 Built from `PROJECT_SPEC.md`. Input: `data/coco_pops_VR.xlsx` (Coco Pops VR tasting survey, 300 respondents).

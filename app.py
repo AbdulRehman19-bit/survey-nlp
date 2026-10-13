@@ -13,8 +13,13 @@ import io
 import json
 import logging
 import os
+import shutil
+import time
+import sys
 import traceback
+import uuid
 import warnings
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +27,7 @@ import streamlit as st
 import yaml
 
 ROOT = Path(__file__).parent
+sys.path.insert(0, str(ROOT / "src"))                                          # the package is imported from the source folder: nothing needs to be pip-installed (Streamlit Cloud)
 os.environ.setdefault("SURVEY_NLP_QUIET", "1")                                  # theme diagnostics (splits, renames, merges, quality line) stay out of the run log here
 # Terminal noise that does not matter: Streamlit's file watcher probes every transformers module and logs a traceback for the ones that need
 # the optional torchvision; the Hugging Face hub warns about unauthenticated requests although the models are local; a library deprecation
@@ -58,6 +64,7 @@ footer {visibility: hidden;}
 [data-testid="stMetricValue"] {font-weight: 700;}
 .stButton > button, .stDownloadButton > button {border-radius: 10px; font-weight: 600; padding: .45rem 1.1rem;}
 [data-testid="stDataFrame"], [data-testid="stDataEditor"] {border: 1px solid #e3e6f2; border-radius: 12px; overflow: hidden;}
+[data-testid="stElementToolbarButton"]:has(button[aria-label^="Show data"]) {display: none;}   /* the chart's "Show data" button: there is no way back from it */
 [data-testid="stExpander"] {background: transparent; border-radius: 12px; border: 1px solid rgba(128,134,160,.35);}
 h2, h3 {letter-spacing: -.01em;}
 .pill {display: inline-block; padding: .1rem .6rem; border-radius: 999px; font-size: .8rem; font-weight: 600; margin-right: .3rem;}
@@ -90,8 +97,27 @@ def load_preview(path: str, mtime: float, sheet, header):
     return df
 
 
+def session_dir() -> Path:
+    """A folder of this visitor's own: on a shared server two people uploading "survey.xlsx" must not overwrite each other's file or results."""
+    if "sid" not in st.session_state:
+        st.session_state.sid = uuid.uuid4().hex[:12]
+    return APP_RUNS / st.session_state.sid
+
+
+def remove_old_sessions(max_age_hours=24):
+    """Visitors' folders are not kept for ever (the server's disk is small). Only folders named like a session id are touched."""
+    if not APP_RUNS.exists():
+        return
+    for d in APP_RUNS.iterdir():
+        try:
+            if d.is_dir() and len(d.name) == 12 and all(ch in "0123456789abcdef" for ch in d.name) and time.time() - d.stat().st_mtime > max_age_hours * 3600:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def save_upload(upload) -> str:
-    folder = APP_RUNS / "uploads"
+    folder = session_dir() / "uploads"
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / upload.name
     target.write_bytes(upload.getbuffer())
@@ -168,16 +194,40 @@ def overrides_for(cfg: dict, edits: dict) -> dict:
     mine = {r["name"].lower() for r in edits["required"]}
     req = [r for r in req if r["name"].lower() not in mine] + [dict(r) for r in edits["required"]]
     ops = []
+    found = set()           # names that discovered themes carry now (set by an earlier rename / merge): an edit on such a name is not about a required theme
     for op in edits["ops"]:
-        hit = [r for r in req if op[0] in ("drop", "rename") and r["name"].lower() == str(op[1]).lower()]
+        hit = [r for r in req if op[0] in ("drop", "rename") and r["name"].lower() == str(op[1]).lower()
+               and str(op[1]).lower() not in found]
         if not hit:
             ops.append(op)
+            if op[0] == "rename":
+                found.discard(str(op[1]).lower())
+                found.add(str(op[2]).lower())
+            elif op[0] == "drop":
+                found.discard(str(op[1]).lower())
+            elif op[0] == "merge":
+                found.difference_update(str(n).lower() for n in op[2])
+                if op[1]:
+                    found.add(str(op[1]).lower())
         elif op[0] == "drop":
-            req.remove(hit[0])
+            if hit[0].get("general"):
+                hit[0]["hidden"] = True                    # the search still uses it: removing it must not change the other themes
+            else:
+                req.remove(hit[0])
+            ops.append(["drop_if_present", op[1]])         # the answers may also have produced a theme of this name: it goes too
         else:
+            hit[0].setdefault("defined_by", hit[0]["name"])    # a new name is a label: the theme keeps what it was defined by
+            ops.append(["rename_if_present", op[1], op[2]])
             hit[0]["name"] = op[2]
     n = edits["n_themes"] + n_general(cfg)
-    return {"themes": {"n_themes": n, "n_total": n, "required": req, "curation": {"ops": ops}}}
+    shown_general = sum(1 for r in req if isinstance(r, dict) and r.get("general") and not r.get("hidden"))
+    return {"themes": {"n_themes": n, "n_total": edits["n_themes"] + shown_general, "required": req, "curation": {"ops": ops}}}
+
+
+def name_taken(name: str, names, except_name=None) -> bool:
+    """Is there already a theme with this name (case does not matter)? `except_name` is the theme being renamed itself."""
+    n = str(name).strip().lower()
+    return any(x.lower() == n for x in names if x != except_name)
 
 
 def settings_sig(cfg: dict, edits: dict) -> str:
@@ -219,6 +269,9 @@ def run_stage(cfg: dict, edits: dict, until: str, force=False, slot=None):
             else:                               # name where it was raised: an empty message (e.g. EOFError) says nothing alone
                 fr = traceback.extract_tb(e.__traceback__)[-1]
                 msg = f"{type(e).__name__}: {e} (at {Path(fr.filename).name}:{fr.lineno}, in {fr.name})"
+            if "usable clauses" in msg or "themes found" in msg:
+                msg = ("There are too few answers, or they are too alike, to find themes. Use a file with more answers, "
+                       "or ask for fewer themes. (" + msg.split(" Lower ")[0].split(" Use themes")[0].strip() + ")")
             if "unknown theme" in msg:
                 msg += "  (The table on screen is out of date. Press 'Find themes' again and redo the edit.)"
             raise ValueError(msg) from e
@@ -274,6 +327,7 @@ def sentiment_bar(pos, neu, neg):
 @st.cache_resource(show_spinner="Loading the language tools. This takes about 30 seconds the first time the app starts.")
 def backend():
     from survey_nlp import export, ingest, pipeline      # heavy imports (torch, transformers): load once, after the page shows
+    remove_old_sessions()
     from transformers.utils import logging as hf_logging
     hf_logging.set_verbosity_error()                      # no model load reports in the terminal
     return export, ingest, pipeline
@@ -295,7 +349,11 @@ with tab_data:
             path = save_upload(up)
         sheet, header = 0, "auto"
         if path and path.lower().endswith((".xlsx", ".xls")):
-            names = sheet_names(path, os.path.getmtime(path))
+            try:
+                names = sheet_names(path, os.path.getmtime(path))
+            except Exception:
+                st.error("This file could not be opened as an Excel workbook. Check that it is a real .xlsx / .xls file and not damaged.")
+                st.stop()
             sheet = st.selectbox("Sheet", names) if len(names) > 1 else names[0]
         if path:
             auto = st.checkbox("Find the header row automatically", value=True)
@@ -304,7 +362,14 @@ with tab_data:
     if not path:
         st.stop()
 
-    df = load_preview(path, os.path.getmtime(path), sheet, header)
+    try:
+        df = load_preview(path, os.path.getmtime(path), sheet, header)
+    except Exception as e:
+        st.error(f"This file could not be read: {e}")
+        st.stop()
+    if df.empty or df.shape[1] == 0:
+        st.warning("The file has no rows to analyse.")
+        st.stop()
     c_in = {"path": path, "header_row": header, "sheet": sheet}
     found_layout = ingest.detect_layout(df, c_in)
     with right:
@@ -356,16 +421,17 @@ with tab_data:
     if n_themes != edits["n_themes"] or new_required != edits["required"]:
         # A different number of themes gives a different set of themes, so renames / merges / removals made on the old set
         # no longer apply (they name themes that may not exist any more). Start the edits again; added themes are kept.
-        ops = [] if n_themes != edits["n_themes"] else edits["ops"]
-        st.session_state.edits = {**edits, "n_themes": n_themes, "required": new_required, "ops": ops}
+        # A changed must-include list does the same: earlier edits may name a theme that was typed there (e.g. "rename Price").
+        st.session_state.edits = {**edits, "n_themes": n_themes, "required": new_required, "ops": []}
         st.session_state.pop("art", None)
         st.session_state.table_version = st.session_state.get("table_version", 0) + 1
     stem = Path(path).stem
     settings = dict(path=path, sheet=sheet, header=header, layout=layout, question_col=question_col, text_col=text_col,
                     text_cols=text_cols, polarity=polarity, preset=preset_name, min_sim=MIN_SIM, fallback=FALLBACK_SIM, evidence=EVIDENCE,
-                    run_dir=str(APP_RUNS / stem), edits=st.session_state.edits)
+                    run_dir=str(session_dir() / stem), edits=st.session_state.edits)
     st.session_state.settings = settings
     st.success("Data ready. Go to the **Themes and analysis** tab.")
+    st.button("Go to Themes and analysis", on_click=lambda: st.session_state.update(main_tabs="2 · Themes and analysis"))
 
 # ----------------------------------------------------------------------------- 2. themes + analysis
 with tab_themes:
@@ -426,13 +492,16 @@ with tab_themes:
             old_name = st.selectbox("Theme", names, key=f"rename_old_{tv}")
             new_name = st.text_input("New name", key=f"rename_new_{tv}")
             if st.button("Rename") and new_name.strip() and new_name.strip() != old_name:
-                edits["ops"].append(["rename", old_name, new_name.strip()])
-                try:
-                    st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
-                    st.rerun()
-                except ValueError as e:
-                    edits["ops"].pop()
-                    st.error(str(e))
+                if name_taken(new_name, names, except_name=old_name):
+                    st.warning(f"A theme called '{new_name.strip()}' already exists. Choose another name, or use Merge.")
+                else:
+                    edits["ops"].append(["rename", old_name, new_name.strip()])
+                    try:
+                        st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
+                        st.rerun()
+                    except ValueError as e:
+                        edits["ops"].pop()
+                        st.error(str(e))
         with e2:
             st.markdown("**Remove themes**")
             drop_pick = st.multiselect("Themes to remove", names, key=f"remove_pick_{tv}")
@@ -472,12 +541,17 @@ with tab_themes:
                 item = {"name": add_name.strip()}
                 if add_kw.strip():
                     item["keywords"] = [k.strip() for k in add_kw.split(",") if k.strip()]
-                edits["required"] = [r for r in edits["required"] if r["name"].lower() != item["name"].lower()] + [item]
-                try:
-                    st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
-                    st.rerun()
-                except ValueError as e:
-                    st.error(str(e))
+                if name_taken(add_name, names):
+                    st.warning(f"A theme called '{add_name.strip()}' already exists. Rename or remove it first, or choose another name.")
+                else:
+                    before = edits["required"]
+                    edits["required"] = before + [item]
+                    try:
+                        st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
+                        st.rerun()
+                    except ValueError as e:
+                        edits["required"] = before         # a theme that could not be added must not stay in the list: it would clear every other edit
+                        st.error(str(e))
         if st.button("Undo all my edits"):
             st.session_state.edits = {**empty_edits(), "n_themes": edits["n_themes"]}
             st.session_state.pop("art", None)
@@ -505,7 +579,15 @@ with tab_results:
     if not f:
         st.info("Run the analysis in the previous tab to see results here.")
         st.stop()
-    sheets = pd.read_excel(f, sheet_name=None)
+    for attempt in range(5):                       # the file may still be being written (a run just finished): wait and read again
+        try:
+            sheets = pd.read_excel(f, sheet_name=None)
+            break
+        except zipfile.BadZipFile:
+            if attempt == 4:
+                st.error("The results file is not readable yet (it may still be saving). Reload the page in a moment.")
+                st.stop()
+            time.sleep(1)
     question_sheets = [n for n in sheets if n not in INTERNAL_SHEETS]          # one sheet per open-ended question
     st.caption(f"Results file: {f}")
     if Path(f).name != "aspect_sentiment_results.xlsx":
@@ -521,42 +603,40 @@ with tab_results:
     m[2].metric("Questions", len(question_sheets))
     m[3].metric("Themes", len(sheets["themes"]))
 
-    shown = st.multiselect("Show questions", question_sheets, default=question_sheets, key="flt_questions")
-    if not shown:
-        st.info("Pick at least one question to show.")
-        st.stop()
-
-    # one set of graphs per question, side by side (a new row after every three questions)
-    for start in range(0, len(shown), 3):
-        row = shown[start:start + 3]
-        for col, qname in zip(st.columns(len(row), gap="medium"), row):
-            with col:
-                d = sheets[qname]
-                theme_cols = [c for c in d.columns if c not in NOT_THEMES]
-                counts = pd.DataFrame({c: d[c].value_counts() for c in theme_cols}).T.reindex(
-                    columns=["Positive", "Neutral", "Negative"]).fillna(0).astype(int)
-                counts = counts.assign(total=counts.sum(axis=1)).sort_values("total", ascending=False).drop(columns="total")
-                ov = d["Overall"].value_counts().reindex(["Positive", "Neutral", "Negative"]).fillna(0).astype(int)
-                st.subheader(qname)
-                sentiment_bar(int(ov["Positive"]), int(ov["Neutral"]), int(ov["Negative"]))
-                with st.container(border=True):
-                    st.markdown("**How each theme is rated**")
-                    st.bar_chart(counts, color=["#43a047", "#f9a825", "#e53935"],
-                                 horizontal=True, height=max(220, 34 * len(counts)))
+    graphs = st.container()                       # filled below, once the question filter in the Answers section has been read
+    st.subheader("Answers")
+    f0, f1, f2 = st.columns([1, 2, 2])
+    pick = f0.selectbox("Show questions", ["All"] + question_sheets, key="flt_questions")      # All = every question
+    shown = question_sheets if pick == "All" else [pick]
+    only = f1.multiselect("Show answers about", list(dict.fromkeys(c for q in shown for c in sheets[q].columns if c not in NOT_THEMES)), key="flt_themes")
+    word = f2.text_input("Search the answer text", key="srch_text")
+    with graphs:
+        # one set of graphs per question, side by side (a new row after every three questions)
+        for start in range(0, len(shown), 3):
+            row = shown[start:start + 3]
+            for col, qname in zip(st.columns(len(row), gap="medium"), row):
+                with col:
+                    d = sheets[qname]
+                    theme_cols = [c for c in d.columns if c not in NOT_THEMES]
+                    counts = pd.DataFrame({c: d[c].value_counts() for c in theme_cols}).T.reindex(
+                        columns=["Positive", "Neutral", "Negative"]).fillna(0).astype(int)
+                    counts = counts.assign(total=counts.sum(axis=1)).sort_values("total", ascending=False).drop(columns="total")
+                    ov = d["Overall"].value_counts().reindex(["Positive", "Neutral", "Negative"]).fillna(0).astype(int)
+                    st.subheader(qname)
+                    sentiment_bar(int(ov["Positive"]), int(ov["Neutral"]), int(ov["Negative"]))
+                    with st.container(border=True):
+                        st.markdown("**How each theme is rated**")
+                        st.bar_chart(counts, color=["#43a047", "#f9a825", "#e53935"],
+                                     horizontal=True, height=max(220, 34 * len(counts)))
 
     # all shown questions in one table, with the question named in the first column
     combined = pd.concat([sheets[q].assign(Question=q) for q in shown], ignore_index=True)
     combined = combined[["Question"] + [c for c in combined.columns if c != "Question"]]
-    all_theme_cols = [c for c in combined.columns if c not in NOT_THEMES and c != "Question"]
-    st.subheader("Answers")
-    f1, f2 = st.columns(2)
-    only = f1.multiselect("Show answers about", all_theme_cols, key="flt_themes")
-    word = f2.text_input("Search the answer text", key="srch_text")
     view = combined
     if only:
         view = view[view[only].notna().any(axis=1)]
     if word:
-        view = view[view["Answer"].astype(str).str.contains(word, case=False, na=False)]
+        view = view[view["Answer"].astype(str).str.contains(word.strip(), case=False, na=False, regex=False)]
     st.write(f"{len(view):,} answers")
     st.dataframe(view.style.map(colour_cell), width="stretch", height=520, hide_index=True)
 

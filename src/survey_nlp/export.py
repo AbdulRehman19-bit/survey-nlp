@@ -222,6 +222,13 @@ def run(art, cfg, timings):
                     d["code"] = d["code"].where(~((d["code"] == opp_) & (p_opp_ < pol["themes_opposite_min_conf"])), P)
             d["code"] = d["code"].where(~d["row_id"].map(lw).fillna(False).astype(bool), codes["neutral"])
             detail_rows.append(d[["row_id", "respondent_id", "question", "theme", "p_pos", "p_neg", "p_neu", "mixed", "model_code", "code", "lex_fix"]])
+        gen = [c for c, t in zip(theme_cols, themes) if t.get("general")]
+        if gen and theme_cols:                          # a valid answer that no theme took is a general remark: it gets the general theme
+                                                        # ("Not Specific") with the answer's own rating, so no answer is left without a theme
+            has_any = out.set_index("row_id")[theme_cols].notna().any(axis=1)
+            none = Lq["text"].notna() & ~Lq.index.map(has_any).fillna(False).astype(bool)   # also answers ingest called "not informative" ("nothing unusual")
+            fill = Lq["overall_code"].fillna(codes["neutral"]).where(none)    # an answer with no rating of its own ("nothing unusual") is Neutral
+            out[gen[0]] = out[gen[0]].where(out[gen[0]].notna(), out.row_id.map(fill)).astype("Int64")
 
     detail = pd.concat(detail_rows, ignore_index=True) if detail_rows else pd.DataFrame()
     pairs = art["absa"][["text_key", "scope", "theme", "clause", "sim", "via", "p_neg", "p_neu", "p_pos"]]
@@ -259,7 +266,7 @@ def run(art, cfg, timings):
         return n + " (Q)" if n.lower() in reserved else n
 
     try:
-        long_mode = bool(cfg["input"].get("question_col"))                   # one comment per row: questions do not share rows
+        long_mode = long.attrs.get("long_format", bool(cfg["input"].get("question_col")))      # one comment per row: questions do not share rows
     except KeyError:
         long_mode = False
     with pd.ExcelWriter(path, engine="openpyxl") as xw:
