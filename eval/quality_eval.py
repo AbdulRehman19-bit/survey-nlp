@@ -21,7 +21,7 @@ DATASETS = {                                                    # name -> (confi
     # that the current discovery does not produce. The Coco data is therefore run with the generic config.
     "coco": ("config_default.yaml", "data/coco_pops_VR.xlsx"),
     "beverage": ("config_beverage.yaml", None),
-    "synthetic": ("config_default.yaml", "eval/data/synthetic_snack_drink.xlsx"),
+    "synthetic": ("config_default.yaml", "eval/suite/snack_drink_synthetic.xlsx"),
 }
 METRICS = ["n_themes", "n_found_themes", "n_below_bar", "n_mixed", "name_coverage_min", "name_coverage_mean", "coherence_npmi_mean",
            "largest_share", "gini", "general_share", "unassigned_share", "n_adjective_names", "n_near_duplicate_pairs"]
