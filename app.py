@@ -51,11 +51,6 @@ CSS = """
 <style>
 .block-container {padding-top: 4.5rem; max-width: 1280px;}
 footer {visibility: hidden;}
-/* Cloud viewer badge, profile card and toolbar icons (GitHub / fork / menu). Only works where these sit inside the app's own page. */
-[data-testid="stToolbar"], [data-testid="stAppDeployButton"], [data-testid="stMainMenu"], [data-testid="stDecoration"],
-[data-testid="stStatusWidget"], .stDeployButton, .viewerBadge_container__r5tak, [class^="viewerBadge"], [class*="viewerBadge"],
-._profileContainer_gzau3_53, [class*="_profileContainer"], [class*="_profilePreview"], a[href*="share.streamlit.io"],
-a[href*="streamlit.io/cloud"], a[href*="github.com/AbdulRehman19-bit"] {display: none !important; visibility: hidden !important;}
 .hero {background: #1f3a5f; color: #fff; padding: 1.4rem 1.8rem;
        border-radius: 8px; margin-bottom: 1.2rem;}
 .hero h1 {color: #fff; margin: 0 !important; padding: 0 !important; font-size: 1.9rem; font-weight: 700; letter-spacing: -.01em; line-height: 1.2;}
