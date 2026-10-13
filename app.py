@@ -583,7 +583,7 @@ with tab_results:
         try:
             sheets = pd.read_excel(f, sheet_name=None)
             break
-        except zipfile.BadZipFile:
+        except (zipfile.BadZipFile, EOFError):         # a half-written .xlsx raises either one
             if attempt == 4:
                 st.error("The results file is not readable yet (it may still be saving). Reload the page in a moment.")
                 st.stop()

@@ -1,3 +1,5 @@
+import os
+import zipfile
 from pathlib import Path
 import numpy as np
 
@@ -10,9 +12,13 @@ class EmbCache:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.index, self.mat = {}, None
         if self.path.exists():
-            z = np.load(self.path, allow_pickle=False)
-            self.mat = z["mat"]
-            self.index = {k: i for i, k in enumerate(z["keys"].tolist())}
+            try:
+                z = np.load(self.path, allow_pickle=False)
+                mat, keys = z["mat"], z["keys"].tolist()
+            except (EOFError, OSError, ValueError, KeyError, zipfile.BadZipFile):   # half-written file (interrupted save, two runs at once)
+                self.path.unlink(missing_ok=True)                                  # start empty: the vectors are recomputed
+            else:
+                self.mat, self.index = mat, {k: i for i, k in enumerate(keys)}
 
     def missing(self, keys):
         return [k for k in dict.fromkeys(keys) if k not in self.index]
@@ -28,4 +34,6 @@ class EmbCache:
 
     def save(self):
         keys = np.array(sorted(self.index, key=self.index.get), dtype=str)
-        np.savez(self.path, keys=keys, mat=self.mat)
+        tmp = self.path.with_name(f"{self.path.stem}.{os.getpid()}.tmp.npz")      # write aside, then swap in: a reader never sees a half file
+        np.savez(tmp, keys=keys, mat=self.mat)
+        os.replace(tmp, self.path)
