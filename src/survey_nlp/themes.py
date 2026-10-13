@@ -1095,6 +1095,65 @@ def _save_frozen(cfg, fp, merged):
     path.write_text(json.dumps(allsaved))
 
 
+def _scaled(c, n_pool, n_target):
+    """Size thresholds that fit a small survey: a theme needs at most its share of the clauses (half of an even split over the
+    requested themes), never less than 3, so 150 answers asked for 12 themes are not held to a minimum meant for thousands."""
+    share = n_pool / max(1, 2 * (n_target or 10))
+    return dict(c, min_theme_clauses=int(max(3, min(c["min_theme_clauses"], share))))
+
+
+def _find_candidates(clauses, Ecl, pool, c, n_target, noise, seed):
+    """The candidate themes. The first try uses the configured thresholds. When that gives fewer themes than were asked for (and
+    themes.expand is not false), looser attempts follow, each keeping the result with the most themes: smaller theme size, rarer
+    words allowed as topic words, then dense regions of clauses with smaller clusters. Fewer than asked after all of it = a warning."""
+    aspects = c.get("method", "aspects") == "aspects"
+    want = n_target or c["min_themes"]
+    best = []
+
+    def take(m):
+        nonlocal best
+        if len(m) > len(best):
+            best = m
+        return len(best) >= want
+
+    k = (n_target or 10) + 2                                        # slack: some groups are too small, merged or generic later
+    if aspects:
+        take(_aspect_candidates(clauses, Ecl, pool, c, k, noise))
+    if len(best) < c["min_themes"] or not aspects:
+        take(_candidates(Ecl, pool, c, seed))                         # no usable words (or the dense-region method): dense regions
+    if len(best) >= want or not c.get("expand", True):
+        return best
+    cs = _scaled(c, len(pool), n_target)
+    if aspects:
+        for df in dict.fromkeys([cs.get("aspect_min_df", 4), 3, 2]):
+            if take(_aspect_candidates(clauses, Ecl, pool, dict(cs, aspect_min_df=df), k, noise)):
+                return best
+    cc = dict(cs)
+    while len(best) < want and cc["min_cluster_size"] > 4:
+        cc = dict(cc, min_cluster_size=max(4, cc["min_cluster_size"] - 2), min_samples=max(2, cc["min_samples"] - 1), min_cluster_frac=0)
+        take(_candidates(Ecl, pool, cc, seed))
+    return best
+
+
+def _split_to_count(merged, Ec, n):
+    """Exactly n themes when the data has the clauses for it: the largest theme is split in two (ward linkage on its clause vectors, no
+    random step) until there are n. The requested number is a target, not a ceiling: a theme that is only a little tighter than a
+    neighbour is still reported separately."""
+    merged = list(merged)
+    while n and len(merged) < n:
+        splittable = [i for i, m in enumerate(merged) if len(m) >= 2]
+        if not splittable:
+            detail(f"[themes] only {len(merged)} themes can be made from the clauses; {n} were asked for")
+            break
+        i = max(splittable, key=lambda i: (len(merged[i]), -i))
+        m = merged[i]
+        lab = AgglomerativeClustering(n_clusters=2, linkage="ward").fit_predict(Ec[m])
+        parts = sorted((m[lab == k] for k in (0, 1)), key=lambda p: (-len(p), int(p.min())))
+        detail(f"[themes] {len(merged)} themes found, {n} asked for: a theme of {len(m)} clauses is split into {len(parts[0])} and {len(parts[1])}")
+        merged[i:i + 1] = parts
+    return merged
+
+
 def discover(clauses, E, cfg):
     """clauses must have a 0..n-1 index aligned with E. Returns (themes, C)."""
     c, seed = cfg["themes"], cfg["seed"]
@@ -1135,24 +1194,14 @@ def discover(clauses, E, cfg):
     merged = _load_frozen(cfg, fp)
     if merged is None:
         Ecl = _with_aspects(clauses, Ecl, mu, axis, c, cfg, noise)
-        cc = dict(c)
-        if c.get("method", "aspects") == "aspects":
-            merged = _aspect_candidates(clauses, Ecl, pool, c, (n_target or 10) + 2, noise)
-            if len(merged) < c["min_themes"]:                        # too few words to group: fall back to dense regions
-                merged = _candidates(Ecl, pool, cc, seed)
-        else:
-            merged = _candidates(Ecl, pool, cc, seed)
-        while c.get("method", "aspects") != "aspects" and c.get("expand", True) and n_target and len(merged) < n_target and cc["min_cluster_size"] > 4:
-            # fewer candidates than requested: look for smaller topics before giving up
-            cc = dict(cc, min_cluster_size=max(4, cc["min_cluster_size"] - 2), min_samples=max(2, cc["min_samples"] - 1),
-                      min_cluster_frac=0)
-            merged = _candidates(Ecl, pool, cc, seed)
+        merged = _find_candidates(clauses, Ecl, pool, c, n_target, noise, seed)
         _save_frozen(cfg, fp, merged)
     n_found = len(merged)
     ctx = _naming_context(clauses, c, noise, generic)
     merged = _merge_duplicates(clauses, merged, c, Ec, mu, cfg, ctx, gv)          # pooled sizes count for the cut below
     merged = _split_oversized(merged, Ec, c)
     merged = _reduce(merged, Ec, n_target)
+    merged = _split_to_count(merged, Ec, n_target)
     if len(merged) < c["min_themes"]:
         raise ValueError(f"Only {len(merged)} themes found. Lower themes.min_cluster_size / min_theme_clauses.")
     themes, merged = _name_and_split(clauses, merged, c, Ec, mu, cfg, n_target, ctx)
@@ -1160,6 +1209,12 @@ def discover(clauses, E, cfg):
         t["candidates_found"] = n_found
     if gv is not None and c.get("fold_generic", True):
         themes, merged = _fold_generic(themes, merged, Ec, gv, c)
+        goal = (c.get("n_total") or n_target or 0) - sum(1 for r in general if not r.get("hidden"))     # found themes the output needs besides General comment
+        if goal and len(merged) < goal:                              # folding generic themes left too few: split the largest again
+            merged = _split_to_count(merged, Ec, goal)
+            themes = _name_themes(clauses, merged, c, Ec, mu, cfg, ctx)
+            for t in themes:
+                t["candidates_found"] = n_found
     if ctx["index"] is not None:                                     # before curation, so edits written against the names see the final ones
         _recheck_names(themes, _shown_members(merged, Ec, gv, cfg["assign"]["min_sim"], c.get("refine_iters", 2),
                                               cfg["assign"].get("fallback_min_sim"), cfg["assign"].get("secondary_margin", 0.1)), ctx, c)

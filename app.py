@@ -237,20 +237,6 @@ def settings_sig(cfg: dict, edits: dict) -> str:
     return hashlib.sha1(json.dumps([cfg, ov], sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _slider_to_box():
-    """Keep the typed number and the slider equal. The widget values are read with .get: when the page was last drawn without
-    these widgets (a stop earlier on the page, a new file) Streamlit has already dropped their keys and a plain read would fail."""
-    v = st.session_state.get("n_slider")
-    if v is not None:
-        st.session_state["n_box"] = v
-
-
-def _box_to_slider():
-    v = st.session_state.get("n_box")
-    if v is not None:
-        st.session_state["n_slider"] = min(30, int(v))
-
-
 def run_stage(cfg: dict, edits: dict, until: str, force=False, slot=None):
     """Write the config, run the pipeline up to `until`, show the progress live in `slot` (a full-width container; the place of the
     call otherwise, which inside a narrow column squeezes it). Returns the stage outputs."""
@@ -399,18 +385,12 @@ with tab_data:
     if "edits" not in st.session_state:
         st.session_state.edits = {**empty_edits(), "n_themes": preset["themes"].get("n_themes") or 10}
     edits = ss("edits", empty_edits())
-    for k in ("n_slider", "n_box"):                                     # either key can be dropped by Streamlit; restore each one
-        if k not in st.session_state:
-            st.session_state[k] = min(30, edits["n_themes"]) if k == "n_slider" else edits["n_themes"]
-    s1.write("**How many themes**")
-    sl, bx = s1.columns([3, 1])
-    sl.slider("Themes (slider)", 2, 30, key="n_slider", label_visibility="collapsed",
-              on_change=_slider_to_box,
-              help="Drag the slider or type a number in the box. The built-in general-comment theme ('not specified') is added on top of "
-                   "this number, so 10 gives 10 themes + 1. Themes you add yourself count inside the number.")
-    bx.number_input("Themes (type)", 2, 100, key="n_box", label_visibility="collapsed",
-                    on_change=_box_to_slider)
-    n_themes = int(st.session_state.n_box)
+    if "n_box" not in st.session_state:                                 # Streamlit can drop the key; restore it
+        st.session_state["n_box"] = edits["n_themes"]
+    n_themes = int(s1.number_input(
+        "How many themes", 2, 100, key="n_box",
+        help="Type the number of themes. The built-in general-comment theme ('not specified') is added on top of this number, "
+             "so 10 gives 10 themes + 1. Themes you add yourself count inside the number."))
     req_text = s1.text_area("Themes that must be included",
                             value="\n".join(r["name"] + (": " + ", ".join(r["keywords"]) if r.get("keywords") else "")
                                             for r in edits["required"]),
