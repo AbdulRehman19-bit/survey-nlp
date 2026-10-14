@@ -310,20 +310,29 @@ def queue_edit(ops=(), required=None):
 
 def themes_table(art) -> pd.DataFrame:
     rows = []
-    ans = {}                                            # (scope, theme index) -> different answers the theme was assigned to
+    a = None
     if "assign" in art:
         a = art["assign"].merge(art["segment"][["clause_id", "text_key"]], on="clause_id")
-        ans = a.groupby(["scope", "theme_idx"]).text_key.nunique().to_dict()
     for scope, (themes, _) in art["themes"].items():
+        general = [i for i, x in enumerate(themes) if x.get("general")]
+        if a is not None and "ingest" in art:
+            long = art["ingest"][0]
+            rows_q = long if scope == "ALL" else long[long.question == scope]          # one row per respondent's answer, as in the Excel
+            a_s = a[a.scope == scope]
         for j, t in enumerate(themes):
-            n_ans = ans.get((scope, j), 0) if ans else (t["frequency"] or None)
-            if ans and t.get("general") and "ingest" in art:
+            if a is None:
+                n_ans = t["frequency"] or None
+            elif "ingest" not in art:
+                n_ans = a[(a.scope == scope) & (a.theme_idx == j)].text_key.nunique()      # no answer rows to count: different answers
+            elif t.get("general"):
                 # The results file also puts every answer that no other theme took under the general theme ("Nothing", "I love it"),
-                # so count those here too: the table and the Excel then show the same number.
-                long = art["ingest"][0]
-                rows_q = long if scope == "ALL" else long[long.question == scope]
-                taken = set(a[(a.scope == scope) & ~a.theme_idx.isin([i for i, x in enumerate(themes) if x.get("general")])].text_key)
+                # so count those here too.
+                taken = set(a_s[~a_s.theme_idx.isin(general)].text_key)
                 n_ans = int(((rows_q.text_clean.fillna("").str.len() > 0) & ~rows_q.text_key.isin(taken)).sum())
+            else:
+                # Answers, counted the way the Excel counts them: every respondent whose answer the theme took (the same words typed
+                # by two people count twice).
+                n_ans = int(rows_q.text_key.isin(set(a_s[a_s.theme_idx == j].text_key)).sum())
             rows.append({"Keep": True, "Theme": t["theme_name"],
                          "Answers": n_ans,
                          "Main words": ", ".join((t.get("curated_keywords") or t["keywords"])[:6]),
