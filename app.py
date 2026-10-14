@@ -51,6 +51,8 @@ CSS = """
 <style>
 .block-container {padding-top: 4.5rem; max-width: 1280px;}
 footer {visibility: hidden;}
+[data-testid="stFileUploader"] button[aria-label="Add files"] {display: none;}
+[data-testid="stNumberInputStepUp"], [data-testid="stNumberInputStepDown"] {display: none;}
 .hero {background: #1f3a5f; color: #fff; padding: 1.4rem 1.8rem;
        border-radius: 8px; margin-bottom: 1.2rem;}
 .hero h1 {color: #fff; margin: 0 !important; padding: 0 !important; font-size: 1.9rem; font-weight: 700; letter-spacing: -.01em; line-height: 1.2;}
@@ -267,6 +269,41 @@ def run_stage(cfg: dict, edits: dict, until: str, force=False, slot=None):
     return art
 
 
+def run_edit(cfg: dict, edits: dict, slot, n_new: int):
+    """Run the theme search after `n_new` edits were appended to edits["ops"]. Edits name themes, but the themes are found again each
+    time and can differ from the table on screen (the earlier edits move the search), so a name may no longer exist. Then do not fail:
+    first redo the new edit(s) on a fresh search, and if they still name nothing, show the fresh themes without edits and say so."""
+    ops = list(edits["ops"])
+    try:
+        return run_stage(cfg, edits, "themes", slot=slot)
+    except ValueError as e:
+        if "unknown theme" not in str(e):
+            edits["ops"] = ops
+            raise
+    for keep, note in ((ops[len(ops) - n_new:], "Your earlier edits no longer matched the themes found now, so they were cleared. The new edit was applied."),
+                       ([], "The themes changed since the table was drawn, so all edits were cleared and nothing was applied. "
+                            "The table now shows the current themes: please make the edit again.")):
+        edits["ops"] = list(keep)
+        try:
+            art = run_stage(cfg, edits, "themes", slot=slot)
+        except ValueError as e:
+            if "unknown theme" not in str(e):
+                edits["ops"] = ops
+                raise
+            continue
+        st.session_state.notice = note
+        return art
+    edits["ops"] = ops
+    raise ValueError("The themes could not be refreshed. Press 'Find themes'.")
+
+
+def queue_edit(ops=(), required=None):
+    """Record an edit for the next script pass; a click that arrives while an edit is already waiting or running is ignored."""
+    if not st.session_state.get("pending_edit"):
+        st.session_state.pending_edit = {"ops": list(ops), "required": required}
+    st.rerun()
+
+
 def themes_table(art) -> pd.DataFrame:
     rows = []
     ans = {}                                            # (scope, theme index) -> different answers the theme was assigned to
@@ -413,7 +450,8 @@ with tab_data:
                     run_dir=str(session_dir() / stem), edits=st.session_state.edits)
     st.session_state.settings = settings
     st.success("Data ready. Go to the **Themes and analysis** tab.")
-    st.button("Go to Themes and analysis", on_click=lambda: st.session_state.update(main_tabs="2 · Themes and analysis"))
+    st.button("Go to Themes and analysis",      # start_find: this button also starts the search; opening the tab by hand does not
+              on_click=lambda: st.session_state.update(main_tabs="2 · Themes and analysis", start_find=True))
 
 # ----------------------------------------------------------------------------- 2. themes + analysis
 with tab_themes:
@@ -446,8 +484,13 @@ with tab_themes:
             st.session_state.run_analysis = False
             st.rerun()
 
+    if "art" not in st.session_state:
+        st.session_state.pending_edit = None                       # an edit has nothing to act on without themes
+    pend = st.session_state.get("pending_edit")
+
     go1, go2 = st.columns([1, 3])
-    if go1.button("Find themes", type="primary") or "art" not in st.session_state and st.session_state.get("auto_find"):
+    start_find = st.session_state.pop("start_find", False)
+    if go1.button("Find themes", type="primary") or "art" not in st.session_state and (start_find or st.session_state.get("auto_find")):
         st.session_state.auto_find = True
         try:
             st.session_state.art = run_stage(cfg, edits, "themes")
@@ -463,6 +506,10 @@ with tab_themes:
                 st.error(str(e))
     go2.caption("Themes are found from the answers themselves. Edit them below, then run the analysis.")
 
+    if st.session_state.get("notice"):
+        st.warning(st.session_state.pop("notice"))
+    if st.session_state.get("edit_error"):
+        st.error(st.session_state.pop("edit_error"))
     art = st.session_state.get("art")
     if art and "themes" in art:
         table = themes_table(art)
@@ -472,39 +519,25 @@ with tab_themes:
 
         names = list(table["Theme"])
         e1, e2, e3, e4 = st.columns(4)
-        progress = st.container()                                  # full width, right under the buttons: where the progress of an edit shows
         with e1:
             st.markdown("**Rename a theme**")
             old_name = st.selectbox("Theme", names, key=f"rename_old_{tv}")
             new_name = st.text_input("New name", key=f"rename_new_{tv}")
-            if st.button("Rename") and new_name.strip() and new_name.strip() != old_name:
+            if st.button("Rename", disabled=bool(pend)) and new_name.strip() and new_name.strip() != old_name:
                 if name_taken(new_name, names, except_name=old_name):
                     st.warning(f"A theme called '{new_name.strip()}' already exists. Choose another name, or use Merge.")
                 else:
-                    edits["ops"].append(["rename", old_name, new_name.strip()])
-                    try:
-                        st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
-                        st.rerun()
-                    except ValueError as e:
-                        edits["ops"].pop()
-                        st.error(str(e))
+                    queue_edit([["rename", old_name, new_name.strip()]])
         with e2:
             st.markdown("**Remove themes**")
             drop_pick = st.multiselect("Themes to remove", names, key=f"remove_pick_{tv}")
-            if st.button("Remove") and drop_pick:
-                new_ops = [["drop", n] for n in drop_pick]
-                edits["ops"] += new_ops
-                try:
-                    st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
-                    st.rerun()
-                except ValueError as e:
-                    edits["ops"] = edits["ops"][:-len(new_ops)]
-                    st.error(str(e))
+            if st.button("Remove", disabled=bool(pend)) and drop_pick:
+                queue_edit([["drop", n] for n in drop_pick])
         with e3:
             st.markdown("**Merge themes**")
             pick = st.multiselect("Themes to merge", names, key=f"merge_pick_{tv}")
             merged_name = st.text_input("Name of the merged theme", key=f"merge_name_{tv}")
-            if st.button("Merge"):
+            if st.button("Merge", disabled=bool(pend)):
                 built_in = {t["theme_name"] for t in all_themes if t.get("required") or t.get("seeded")}
                 if len(pick) < 2:
                     st.warning("Pick at least two themes to merge.")
@@ -512,32 +545,36 @@ with tab_themes:
                     st.warning("Built-in and added themes ({}) cannot be merged. Merge themes found in the answers, or use Remove."
                                .format(", ".join(sorted(built_in & set(pick)))))
                 else:
-                    edits["ops"].append(["merge", merged_name.strip() or None, pick])
-                    try:
-                        st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
-                        st.rerun()
-                    except ValueError as e:
-                        edits["ops"].pop()
-                        st.error(str(e))
+                    queue_edit([["merge", merged_name.strip() or None, pick]])
         with e4:
             st.markdown("**Add a theme**")
             add_name = st.text_input("Theme name", key="add_name")
             add_kw = st.text_input("Words that signal it (optional, comma-separated)", key="add_kw")
-            if st.button("Add") and add_name.strip():
+            if st.button("Add", disabled=bool(pend)) and add_name.strip():
                 item = {"name": add_name.strip()}
                 if add_kw.strip():
                     item["keywords"] = [k.strip() for k in add_kw.split(",") if k.strip()]
                 if name_taken(add_name, names):
                     st.warning(f"A theme called '{add_name.strip()}' already exists. Rename or remove it first, or choose another name.")
                 else:
-                    before = edits["required"]
-                    edits["required"] = before + [item]
-                    try:
-                        st.session_state.art = run_stage(cfg, edits, "themes", slot=progress)
-                        st.rerun()
-                    except ValueError as e:
-                        edits["required"] = before         # a theme that could not be added must not stay in the list: it would clear every other edit
-                        st.error(str(e))
+                    queue_edit(required=edits["required"] + [item])
+        progress = st.container()                                  # right under the four edit buttons: where the progress of an edit shows
+        if pend:
+            # A Rename / Remove / Merge / Add click only records the edit (see queue_edit); it is carried out here, under the buttons
+            # (which are greyed out meanwhile), and the flag stays set until it has finished. A tab switch interrupts the run and the next
+            # pass carries on with the same edit. The edit goes onto a copy and is committed only on success, so an interrupted or failed
+            # edit never leaves half an edit behind and a repeated click never applies it twice.
+            trial = {**edits, "ops": list(edits["ops"]) + pend["ops"],
+                     "required": pend["required"] if pend["required"] is not None else edits["required"]}
+            try:
+                art = run_edit(cfg, trial, progress, len(pend["ops"]))
+            except ValueError as e:
+                st.session_state.edit_error = str(e)
+            else:
+                edits["ops"], edits["required"] = trial["ops"], trial["required"]
+                st.session_state.art = art
+            st.session_state.pending_edit = None
+            st.rerun()
         if st.button("Undo all my edits"):
             st.session_state.edits = {**empty_edits(), "n_themes": edits["n_themes"]}
             st.session_state.pop("art", None)
