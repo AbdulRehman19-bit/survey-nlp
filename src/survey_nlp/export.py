@@ -242,8 +242,11 @@ def run(art, cfg, timings):
     if o.get("labels"):
         inv = {codes[k]: v for k, v in o["labels"].items()}
         words = out.copy()
+        # The rating columns are known exactly (not guessed from their names): a theme called "Like" in a survey with a question
+        # called "Like" must not turn that question's answer text into a rating column and blank it.
+        coded = {c for cols in qcols.values() for c, header in cols if header != "Answer"}
         for col in out.columns:
-            if col.endswith("Overall") or col in {t["theme_name"] for ts, _ in T.values() for t in ts}                     or (multi and " | " in col):
+            if col in coded:
                 words[col] = out[col].map(lambda v: inv.get(v) if pd.notna(v) else None)
     path = rd / "aspect_sentiment_results.xlsx"
     try:

@@ -73,7 +73,8 @@ def test_the_app_script_is_valid_python_and_shows_edit_progress_in_a_full_width_
     import ast
     src = (ROOT / "app.py").read_text(encoding="utf-8")
     ast.parse(src)                                                       # Streamlit would only show the SyntaxError in the browser
-    assert src.count("slot=progress") == 4 and "progress = st.container()" in src      # apply / merge / add report under the buttons, not inside a column
+    # every edit (rename / remove / merge / add) is run in one place and reports under the buttons, not inside a column
+    assert "progress = st.container()" in src and "run_edit(cfg, trial, progress," in src
 
 
 def test_the_apps_log_setting_hides_streamlits_file_watcher_tracebacks_for_modules_that_need_torchvision():
