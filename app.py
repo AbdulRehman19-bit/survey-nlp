@@ -316,8 +316,16 @@ def themes_table(art) -> pd.DataFrame:
         ans = a.groupby(["scope", "theme_idx"]).text_key.nunique().to_dict()
     for scope, (themes, _) in art["themes"].items():
         for j, t in enumerate(themes):
+            n_ans = ans.get((scope, j), 0) if ans else (t["frequency"] or None)
+            if ans and t.get("general") and "ingest" in art:
+                # The results file also puts every answer that no other theme took under the general theme ("Nothing", "I love it"),
+                # so count those here too: the table and the Excel then show the same number.
+                long = art["ingest"][0]
+                rows_q = long if scope == "ALL" else long[long.question == scope]
+                taken = set(a[(a.scope == scope) & ~a.theme_idx.isin([i for i, x in enumerate(themes) if x.get("general")])].text_key)
+                n_ans = int(((rows_q.text_clean.fillna("").str.len() > 0) & ~rows_q.text_key.isin(taken)).sum())
             rows.append({"Keep": True, "Theme": t["theme_name"],
-                         "Answers": ans.get((scope, j), 0) if ans else (t["frequency"] or None),
+                         "Answers": n_ans,
                          "Main words": ", ".join((t.get("curated_keywords") or t["keywords"])[:6]),
                          "Matching words": ", ".join(t.get("curated_keywords") or t.get("assign_keywords") or []),
                          "_orig": t["theme_name"]})
