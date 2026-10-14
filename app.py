@@ -122,7 +122,11 @@ def save_upload(upload) -> str:
     folder = session_dir() / "uploads"
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / upload.name
-    target.write_bytes(upload.getbuffer())
+    data = bytes(upload.getbuffer())
+    # Write only when the file is new or different: the saved results are keyed on the file's modification time, so rewriting the same
+    # bytes on every visit to the Data tab made the themes search start again when going back to the Themes tab.
+    if not target.exists() or target.read_bytes() != data:
+        target.write_bytes(data)
     return str(target)
 
 
@@ -364,7 +368,13 @@ TAB_RESULTS = "3 · Results"
 tab_data, tab_themes, tab_results = st.tabs(["1 · Data", "2 · Themes and analysis", TAB_RESULTS], key="main_tabs", on_change="rerun")
 
 # ----------------------------------------------------------------------------- 1. data
-with tab_data:
+def forget_data():
+    """No usable file: drop what was made from the previous one, so the other tabs say 'choose a file' instead of showing old results."""
+    for k in ("settings", "art", "art_sig", "final", "result_dir", "analysis_done", "run_analysis", "pending_edit"):
+        st.session_state.pop(k, None)
+
+
+def render_data_tab():
     left, right = st.columns([1, 2], gap="large")
     with left:
         st.subheader("Your file")
@@ -378,23 +388,27 @@ with tab_data:
                 names = sheet_names(path, os.path.getmtime(path))
             except Exception:
                 st.error("This file could not be opened as an Excel workbook. Check that it is a real .xlsx / .xls file and not damaged.")
-                st.stop()
+                forget_data()
+                return
             sheet = st.selectbox("Sheet", names) if len(names) > 1 else names[0]
         if path:
             auto = st.checkbox("Find the header row automatically", value=True)
             header = "auto" if auto else st.number_input("Header row (0 = first row)", 0, 50, 0)
 
     if not path:
-        st.stop()
+        forget_data()
+        return
 
     try:
         df = load_preview(path, os.path.getmtime(path), sheet, header)
     except Exception as e:
         st.error(f"This file could not be read: {e}")
-        st.stop()
+        forget_data()
+        return
     if df.empty or df.shape[1] == 0:
         st.warning("The file has no rows to analyse.")
-        st.stop()
+        forget_data()
+        return
     c_in = {"path": path, "header_row": header, "sheet": sheet}
     found_layout = ingest.detect_layout(df, c_in)
     with right:
@@ -414,10 +428,12 @@ with tab_data:
         questions = [str(x) for x in text_cols]
     if not questions:
         st.warning("No open-ended questions were found in this file.")
-        st.stop()
+        forget_data()
+        return
 
-    st.subheader("Settings")
-    s1 = st.container()
+    with left:                                                          # under "Your file", in the same column
+        st.subheader("Settings")
+        s1 = st.container()
     preset_name = DEFAULTS.name                                         # built-in settings: nothing to choose, everything is automatic
     preset = load_preset(preset_name)
     fixed = [r["name"] if isinstance(r, dict) else r for r in (preset["themes"].get("required") or [])]
@@ -427,7 +443,7 @@ with tab_data:
     if "n_box" not in st.session_state:                                 # Streamlit can drop the key; restore it
         st.session_state["n_box"] = edits["n_themes"]
     n_themes = int(s1.number_input(
-        "How many themes", 2, 100, key="n_box",
+        "How many themes", 2, 100, value=edits["n_themes"], key="n_box",
         help="Type the number of themes. The built-in general-comment theme ('not specified') is added on top of this number, "
              "so 10 gives 10 themes + 1. Themes you add yourself count inside the number."))
     req_text = s1.text_area("Themes that must be included",
@@ -453,12 +469,16 @@ with tab_data:
     st.button("Go to Themes and analysis",      # start_find: this button also starts the search; opening the tab by hand does not
               on_click=lambda: st.session_state.update(main_tabs="2 · Themes and analysis", start_find=True))
 
+
+with tab_data:
+    render_data_tab()
+
 # ----------------------------------------------------------------------------- 2. themes + analysis
-with tab_themes:
+def render_themes_tab():
     s = ss("settings", None)
     if not s:
         st.info("Choose a file in the first tab.")
-        st.stop()
+        return
     edits = st.session_state.edits
     cfg = build_config(s)
     sig = settings_sig(cfg, edits)
@@ -467,7 +487,6 @@ with tab_themes:
         # a new version of the app): edits made on it would name themes the next search does not produce. Search again from scratch.
         st.session_state.pop("art", None)
         edits["ops"] = []
-        st.session_state.auto_find = True
 
     if st.session_state.get("run_analysis"):
         # Runs before the theme editors are drawn: otherwise the old Merge / Add sections stay on screen while it works and show twice.
@@ -490,8 +509,7 @@ with tab_themes:
 
     go1, go2 = st.columns([1, 3])
     start_find = st.session_state.pop("start_find", False)
-    if go1.button("Find themes", type="primary") or "art" not in st.session_state and (start_find or st.session_state.get("auto_find")):
-        st.session_state.auto_find = True
+    if go1.button("Find themes", type="primary") or "art" not in st.session_state and start_find:
         try:
             st.session_state.art = run_stage(cfg, edits, "themes")
         except ValueError as e:
@@ -505,6 +523,8 @@ with tab_themes:
             else:
                 st.error(str(e))
     go2.caption("Themes are found from the answers themselves. Edit them below, then run the analysis.")
+    if "art" not in st.session_state:
+        st.info("Press **Find themes** to find the themes in your answers.")
 
     if st.session_state.get("notice"):
         st.warning(st.session_state.pop("notice"))
@@ -515,7 +535,8 @@ with tab_themes:
         table = themes_table(art)
         all_themes = [t for ts, _ in art["themes"].values() for t in ts]
         tv = st.session_state.get("table_version", 0)              # new key whenever the themes change: a kept widget would still show the old names
-        st.dataframe(table.drop(columns=["_orig", "Keep"]), hide_index=True, width="stretch")
+        st.dataframe(table.drop(columns=["_orig", "Keep"]), hide_index=True, width="stretch",
+                     height=min(35 * (len(table) + 1) + 3, 600))      # every row visible (about 35 px per row), a scroll bar only when very long
 
         names = list(table["Theme"])
         e1, e2, e3, e4 = st.columns(4)
@@ -548,8 +569,8 @@ with tab_themes:
                     queue_edit([["merge", merged_name.strip() or None, pick]])
         with e4:
             st.markdown("**Add a theme**")
-            add_name = st.text_input("Theme name", key="add_name")
-            add_kw = st.text_input("Words that signal it (optional, comma-separated)", key="add_kw")
+            add_name = st.text_input("Theme name", key=f"add_name_{tv}")
+            add_kw = st.text_input("Words that signal it (optional, comma-separated)", key=f"add_kw_{tv}")
             if st.button("Add", disabled=bool(pend)) and add_name.strip():
                 item = {"name": add_name.strip()}
                 if add_kw.strip():
@@ -594,6 +615,10 @@ with tab_themes:
             st.session_state.run_analysis = True          # the run happens at the top of the next script pass, before the editors are drawn
             st.rerun()
 
+
+with tab_themes:
+    render_themes_tab()
+
 # ----------------------------------------------------------------------------- 3. results
 with tab_results:
     s = st.session_state.get("settings")
@@ -613,7 +638,7 @@ with tab_results:
                 st.stop()
             time.sleep(1)
     question_sheets = [n for n in sheets if n not in INTERNAL_SHEETS]          # one sheet per open-ended question
-    st.caption(f"Results file: {f}")
+    st.caption(f"Results file: {Path(f).name}")
     if Path(f).name != "aspect_sentiment_results.xlsx":
         st.warning("The standard results file is open in Excel, so this run was saved under a different name.")
 
