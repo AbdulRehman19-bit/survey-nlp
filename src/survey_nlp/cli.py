@@ -75,6 +75,9 @@ def _show(art):
         for i, t in enumerate(themes, 1):
             size = t["frequency"] if t["frequency"] else "added"
             print(f"  {i:>2}. {t['theme_name']:<18} {str(size):>6}   {', '.join((t.get('curated_keywords') or t['keywords'])[:6])}")
+            match = t.get("curated_keywords") or t.get("assign_keywords")
+            if match:
+                print(f"{'':>30}matching: {', '.join(match)}")
     return [t["theme_name"] for ts, _ in art["themes"].values() for t in ts]
 
 

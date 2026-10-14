@@ -277,7 +277,9 @@ def themes_table(art) -> pd.DataFrame:
         for j, t in enumerate(themes):
             rows.append({"Keep": True, "Theme": t["theme_name"],
                          "Answers": ans.get((scope, j), 0) if ans else (t["frequency"] or None),
-                         "Main words": ", ".join((t.get("curated_keywords") or t["keywords"])[:6]), "_orig": t["theme_name"]})
+                         "Main words": ", ".join((t.get("curated_keywords") or t["keywords"])[:6]),
+                         "Matching words": ", ".join(t.get("curated_keywords") or t.get("assign_keywords") or []),
+                         "_orig": t["theme_name"]})
     return pd.DataFrame(rows)
 
 
