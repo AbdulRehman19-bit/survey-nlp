@@ -133,3 +133,27 @@ def test_a_merged_theme_covers_every_part_and_a_new_name_does_not_change_what_ma
     t = [{"theme_name": "Sugary", "match_name": "Refreshing", "keywords": [], "assign_keywords": ["refreshing"]}]
     assert run(clauses, np.array([[0.5, 0.5]], np.float32), t, np.array([[1, 0]], np.float32),
                {"assign": {"min_sim": 0.9, "secondary_margin": 0.03, "keyword_min_len": 3, "keyword_min_sim": 0}}).theme_idx.tolist() == [0]
+
+
+def test_a_common_word_of_a_longer_theme_name_does_not_match_unless_the_switch_is_off():
+    """"taste" in the theme name "Original Taste" is in most clauses: with name_keyword_max_share it stops pulling them into Original."""
+    clauses = pd.DataFrame({"clause_id": [0, 1, 2, 3], "clause": ["the taste is nice", "great taste", "its original", "taste and texture"]})
+    E = np.array([[1, 0]] * 4, np.float32)
+    C = np.array([[0, 1]], np.float32)                      # orthogonal: semantic never fires
+    themes = [{"theme_name": "Original", "match_name": "Original Taste", "keywords": [], "assign_keywords": ["original", "taste"]}]
+    base = {"min_sim": 0.9, "secondary_margin": 0.03, "keyword_min_len": 3, "keyword_min_sim": 0, "name_keywords": True}
+    assert sorted(run(clauses, E, themes, C, {"assign": base}).clause_id) == [0, 1, 2, 3]                    # off: every taste clause matches
+    on = run(clauses, E, themes, C, {"assign": {**base, "name_keyword_max_share": 0.5}})
+    assert on.clause_id.tolist() == [2]                                                                      # on: only "original"
+    one_word = [{"theme_name": "Taste", "match_name": "Taste", "keywords": [], "assign_keywords": ["taste"]}]
+    assert sorted(run(clauses, E, one_word, C, {"assign": {**base, "name_keyword_max_share": 0.5}}).clause_id) == [0, 1, 3]   # a theme named "Taste" keeps it
+
+
+def test_a_name_whose_words_are_all_common_keeps_them():
+    clauses = pd.DataFrame({"clause_id": [0, 1, 2], "clause": ["white chocolate", "dark chocolate", "white pieces"]})
+    E = np.array([[1, 0]] * 3, np.float32)
+    C = np.array([[0, 1]], np.float32)
+    themes = [{"theme_name": "White Chocolate", "match_name": "White Chocolate", "keywords": [], "assign_keywords": ["white", "chocolate"]}]
+    cfg = {"assign": {"min_sim": 0.9, "secondary_margin": 0.03, "keyword_min_len": 3, "keyword_min_sim": 0, "name_keywords": True,
+                      "name_keyword_max_share": 0.5}}
+    assert sorted(run(clauses, E, themes, C, cfg).clause_id) == [0, 1, 2]       # "white" and "chocolate" are both in over half: both stay

@@ -18,15 +18,33 @@ def _general_sim(E, cfg):
     return (E @ V.T).max(1)
 
 
-def _name_words(themes, c):
+def _name_words(themes, c, clauses=None):
     """For every theme, the words of its own name that are distinctive: a theme called "Refreshing Taste" is matched by the word
     "refreshing" but not by "taste" (the name of another theme, shared by many clauses). Only words the discovery found frequent in
-    the theme and clearly rarer elsewhere (its assign_keywords) are used, so a name never turns into a noisy keyword."""
+    the theme and clearly rarer elsewhere (its assign_keywords) are used, so a name never turns into a noisy keyword.
+
+    assign.name_keyword_max_share (optional, off when absent): a word of a LONGER name that appears in more than this share of all
+    clauses is dropped ("taste" in "Original Taste" is in 30% of the clauses, so it would pull every taste remark into Original).
+    A theme named by that one word alone keeps it, and so does a name whose words are all common ("White Chocolate").
+    Remove the setting to go back to the old behaviour."""
     words = [set(re.findall(r"[a-z']+", t.get("match_name", t["theme_name"]).lower().split(" & ")[0])) for t in themes]       # a joined name: its first topic only. A name chosen later is only a label
+    max_share = c.get("name_keyword_max_share")
+    text = clauses["clause"].str.lower() if (max_share is not None and clauses is not None and len(clauses)) else None
+    share = {}
+
+    def too_common(w):
+        if w not in share:
+            share[w] = float(text.str.contains(r"\b" + re.escape(w) + r"\b", regex=True).mean())
+        return share[w] > max_share
     out = []
     for j, t in enumerate(themes):
         others = set().union(*[w for k, w in enumerate(words) if k != j and len(w) == 1])        # a word that is the whole name of another theme
-        out.append([w for w in sorted(words[j]) if len(w) >= c["keyword_min_len"] and w in (t.get("assign_keywords") or []) and w not in others])
+        ws = [w for w in sorted(words[j]) if len(w) >= c["keyword_min_len"] and w in (t.get("assign_keywords") or []) and w not in others]
+        if text is not None and len(words[j]) > 1:
+            common = [w for w in ws if too_common(w)]
+            if len(common) < len(ws):                       # a distinctive word is left ("original"): the common one ("taste") goes.
+                ws = [w for w in ws if w not in common]     # When every word is common ("White Chocolate") they stay: nothing is more specific
+        out.append(ws)
     return out
 
 
@@ -54,7 +72,7 @@ def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
     A[r[sec], order[sec, 1]] = True
     K = np.zeros_like(A)
     trusted = np.zeros(S.shape[1], bool)                # themes with words a person wrote: those words match whatever the similarity
-    name_kws = _name_words(themes, c)
+    name_kws = _name_words(themes, c, clauses)
     for j, t in enumerate(themes):                      # whole-word keyword match, case-insensitive
         # Only words a person wrote for the theme (required themes, curation) match by keyword. The words discovered from the
         # data are right only about 1 time in 3 and made a clause match 3.6 themes on average; set

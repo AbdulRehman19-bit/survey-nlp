@@ -104,6 +104,7 @@ assign:
   min_sim: 0.4
   secondary_margin: 0.1
   keyword_min_len: 3
+  name_keyword_max_share: 0.10  # a word of a longer theme name found in more than 10% of all clauses ("taste" in "Original Taste") does not match by itself. Delete this line to turn it off.
   center: true
   keyword_min_precision: 0.5
   fallback_min_sim: 0.25
