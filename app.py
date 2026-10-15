@@ -534,7 +534,7 @@ def render_themes_tab():
                 edits["ops"] = []
                 try:
                     st.session_state.art = run_stage(cfg, edits, "themes")
-                    st.warning(f"Earlier merge / rename / remove edits no longer matched the themes found now, so they were cleared. ({e})")
+                    st.warning("The themes were updated with the new data, so your earlier edits were cleared.")
                 except ValueError as e2:
                     st.error(str(e2))
             else:
