@@ -308,13 +308,21 @@ def queue_edit(ops=(), required=None):
     st.rerun()
 
 
-def themes_table(art) -> pd.DataFrame:
+def dropped_keywords(art) -> dict:
+    """Words left out of the matching because most answers that contain them are not about their theme: theme -> [(word, answers with it, close to the theme)]."""
+    return dict(getattr(art.get("assign"), "attrs", {}).get("dropped_keywords", {})) if "assign" in art else {}
+
+
+def themes_table(art, cfg=None) -> pd.DataFrame:
+    dropped = dropped_keywords(art)
     rows = []
     a = None
     if "assign" in art:
         a = art["assign"].merge(art["segment"][["clause_id", "text_key"]], on="clause_id")
     for scope, (themes, _) in art["themes"].items():
         general = [i for i, x in enumerate(themes) if x.get("general")]
+        words = (asg.matching_words(themes, cfg["assign"], art.get("segment")) if cfg is not None
+                 else [list(t.get("curated_keywords") or t.get("assign_keywords") or []) for t in themes])
         if a is not None and "ingest" in art:
             long = art["ingest"][0]
             rows_q = long if scope == "ALL" else long[long.question == scope]          # one row per respondent's answer, as in the Excel
@@ -328,7 +336,7 @@ def themes_table(art) -> pd.DataFrame:
                 # The results file also puts every answer that no other theme took under the general theme ("Nothing", "I love it"),
                 # so count those here too.
                 taken = set(a_s[~a_s.theme_idx.isin(general)].text_key)
-                n_ans = int(((rows_q.text_clean.fillna("").str.len() > 0) & ~rows_q.text_key.isin(taken)).sum())
+                n_ans = int(((rows_q.text_clean.fillna("").str.len() > 0) & rows_q.valid & ~rows_q.text_key.isin(taken)).sum())      # real answers only: "Nothing" is not counted
             else:
                 # Answers, counted the way the Excel counts them: every respondent whose answer the theme took (the same words typed
                 # by two people count twice).
@@ -336,7 +344,7 @@ def themes_table(art) -> pd.DataFrame:
             rows.append({"Keep": True, "Theme": t["theme_name"],
                          "Answers": n_ans,
                          "Main words": ", ".join((t.get("curated_keywords") or t["keywords"])[:6]),
-                         "Matching words": ", ".join(t.get("curated_keywords") or t.get("assign_keywords") or []),
+                         "Matching words": ", ".join(w for w in words[j] if w not in {d[0] for d in dropped.get(t["theme_name"], [])}),
                          "_orig": t["theme_name"]})
     return pd.DataFrame(rows)
 
@@ -380,6 +388,8 @@ def backend():
 
 
 export, ingest, pipeline = backend()
+from survey_nlp import suggest
+from survey_nlp import assign as asg
 
 TAB_RESULTS = "3 · Results"
 tab_data, tab_themes, tab_results = st.tabs(["1 · Data", "2 · Themes and analysis", TAB_RESULTS], key="main_tabs", on_change="rerun")
@@ -389,6 +399,52 @@ def forget_data():
     """No usable file: drop what was made from the previous one, so the other tabs say 'choose a file' instead of showing old results."""
     for k in ("settings", "art", "art_sig", "final", "result_dir", "analysis_done", "run_analysis", "pending_edit"):
         st.session_state.pop(k, None)
+
+
+def render_suggestion(settings: dict):
+    """Under the theme count: test several counts on this file and recommend one. Nothing is saved; the real search runs later."""
+    key = (settings["path"], os.path.getmtime(settings["path"]), settings["sheet"], settings["header"],
+           json.dumps(settings["edits"]["required"], sort_keys=True))
+    st.subheader("Not sure how many themes?")
+    st.caption("The program can try several counts on your file and recommend the one that gives the clearest themes: "
+               "none mixed up, none repeating another, every name fitting its answers, and few answers left in Not Specific. It takes a few minutes.")
+    if st.button("Suggest a number of themes"):
+        cfg = build_config(settings)
+        run_dir = Path(cfg["run_dir"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        cfg_path = run_dir / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        bar = st.progress(0.0, text="Preparing the answers…")
+
+        def tick(done, total, n):
+            bar.progress(done / total, text=f"Tested {done} of {total} counts (last: {n} themes)")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                table = suggest.sweep(str(cfg_path), lambda n: overrides_for(cfg, {**settings["edits"], "n_themes": n, "ops": []}), progress=tick)
+        except Exception as e:
+            bar.empty()
+            st.error(f"The counts could not be tested: {e}")
+            return
+        bar.empty()
+        best, why = suggest.recommend(table)
+        st.session_state.suggestion = {"key": key, "table": table, "best": best, "why": why}
+    sug = st.session_state.get("suggestion")
+    if not sug or sug["key"] != key:
+        return
+    if sug["best"] is None:
+        st.warning(sug["why"])
+        return
+    st.success(f"Suggested: **{sug['best']} themes** (plus the general-comment theme). {sug['why']}")
+    st.button(f"Use {sug['best']} themes", on_click=lambda: st.session_state.update(n_box=sug["best"]))
+    t = sug["table"].rename(columns={"asked": "Themes asked", "themes": "Found", "mixed": "Mixed", "weak_names": "Weak names", "below_bar": "Name under bar",
+                                     "near_duplicates": "Near-duplicates", "name_coverage_min": "Weakest name fit", "name_coverage_mean": "Average name fit",
+                                     "coherence": "Coherence", "smallest_theme": "Smallest theme", "not_specific": "Not Specific share",
+                                     "unmatched": "No theme share", "smallest_share": "Smallest theme share", "largest_theme": "Largest theme share", "gini": "Unevenness"})
+    with st.expander("How each count scored"):
+        st.dataframe(t.round(2), width="stretch", hide_index=True)
+        st.caption("Mixed = a theme whose name fits too few of its answers. Coherence: higher is better (tighter themes). "
+                   "Name fit = share of a theme's answers that use its name. Not Specific / No theme share = clauses no specific theme explains "
+                   "(too few themes leaves many here). Unevenness: 0 = all themes the same size.")
 
 
 def render_data_tab():
@@ -482,6 +538,7 @@ def render_data_tab():
                     text_cols=text_cols, polarity=polarity, preset=preset_name, min_sim=MIN_SIM, fallback=FALLBACK_SIM, evidence=EVIDENCE,
                     run_dir=str(session_dir() / stem), edits=st.session_state.edits)
     st.session_state.settings = settings
+    render_suggestion(settings)
     st.success("Data ready. Go to the **Themes and analysis** tab.")
     st.button("Go to Themes and analysis",      # start_find: this button also starts the search; opening the tab by hand does not
               on_click=lambda: st.session_state.update(main_tabs="2 · Themes and analysis", start_find=True))
@@ -549,11 +606,16 @@ def render_themes_tab():
         st.error(st.session_state.pop("edit_error"))
     art = st.session_state.get("art")
     if art and "themes" in art:
-        table = themes_table(art)
+        table = themes_table(art, cfg)
         all_themes = [t for ts, _ in art["themes"].values() for t in ts]
         tv = st.session_state.get("table_version", 0)              # new key whenever the themes change: a kept widget would still show the old names
         st.dataframe(table.drop(columns=["_orig", "Keep"]), hide_index=True, width="stretch",
                      height=min(35 * (len(table) + 1) + 3, 600))      # every row visible (about 35 px per row), a scroll bar only when very long
+        if "ingest" in art:
+            n_non = int((~art["ingest"][0].valid).sum())
+            if n_non:
+                st.caption(f"Not Specific counts real answers that name no clear topic. The {n_non} non-answers (\"Nothing\", \"N/A\") are not counted in the table; "
+                           "the results file shows them under Not Specific as Neutral.")
 
         names = list(table["Theme"])
         e1, e2, e3, e4 = st.columns(4)
