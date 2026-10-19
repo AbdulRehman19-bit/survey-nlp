@@ -47,7 +47,9 @@ def find_corrections(texts, c: dict, protect=()) -> dict:
         (the words of your own theme names and keywords);
       - a dictionary word that starts with the same letter is 1 edit away (2 for words of 7+ letters);
       - that word is one this survey already uses, or a really common English word (`spell_min_freq`);
-      - when several fit, the one used most in the survey wins, then the most common in English."""
+      - the closest spelling wins (fewest edits); among equally close words the one used most in the survey, then the most common in
+        English, but only when it clearly wins: with no clear winner the word is left as written ("steap" could be step, steep or steal);
+      - a real word + "y" ("biscuity") is a word people coin, not a typo."""
     from spellchecker import SpellChecker
     counts = Counter(w.lower() for t in texts for w in _WORD.findall(str(t)))
     short, long_ = SpellChecker(distance=1), SpellChecker(distance=2)
@@ -59,7 +61,9 @@ def find_corrections(texts, c: dict, protect=()) -> dict:
         if len(w) < min_len or w in protect:
             continue
         if any(v != w and v in short for v in _variants(w)) or re.search(r"is(?:e|ed|es|ing|ation|ations)$", w):
-            continue                                        # a British / American twin, or an "-ise" verb: a spelling choice, not a typo
+            continue
+        if w.endswith("y") and w[:-1] in short:
+            continue                                        # a real word + "y" ("biscuity", "oaty"): a describing word people coin, not a typo                                        # a British / American twin, or an "-ise" verb: a spelling choice, not a typo
         sp = long_ if len(w) >= 7 else short
         near = sp.edit_distance_2(w) if sp is long_ else sp.edit_distance_1(w)
         used = {x for x in near if counts.get(x, 0) >= min_count and known(x)}               # a word this survey writes often: the likeliest meaning
@@ -68,7 +72,15 @@ def find_corrections(texts, c: dict, protect=()) -> dict:
         if counts[w] >= min_count:                      # written by several people: a typo only if a longer dictionary word is far more used
             cands = {x for x in cands if known(x) and len(w) >= 6 and len(x) >= len(w) and counts.get(x, 0) >= 5 * counts[w]}
         if cands:
-            out[w] = max(cands, key=lambda x: (counts.get(x, 0), sp.word_usage_frequency(x)))
+            e1 = short.edit_distance_1(w)
+            dist = lambda x: 1 if x in e1 else 2
+            nearest = min(dist(x) for x in cands)                           # the closest spelling first: "chocoatey" is "chocolatey" (1 edit), not "chocolate" (2)
+            pool = sorted((x for x in cands if dist(x) == nearest), key=lambda x: (counts.get(x, 0), sp.word_usage_frequency(x)), reverse=True)
+            if len(pool) > 1:                                               # several equally close words: change only when one clearly wins
+                a, b = pool[0], pool[1]                                     # (used more in this survey, or far more common in English); "steap" is step / steep / steal: left as written
+                if not (counts.get(a, 0) > counts.get(b, 0) or sp.word_usage_frequency(a) >= 5 * sp.word_usage_frequency(b)):
+                    continue
+            out[w] = pool[0]
     return out
 
 

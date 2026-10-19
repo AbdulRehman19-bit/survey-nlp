@@ -60,3 +60,13 @@ def test_csv_in_windows_encoding_with_a_semicolon_delimiter_is_read(tmp_path):
     q = tmp_path / "b.csv"
     q.write_bytes(b"\xef\xbb\xbfText\nonly column\nsecond row\n")                 # UTF-8 with BOM, one column: no delimiter to guess
     assert list(ingest.read_table({"path": str(q)}).columns) == ["Text"]
+
+
+def test_spelling_closest_word_and_no_guess():
+    from survey_nlp import spelling
+    texts = ["chocolatey and chocolate " * 1] * 1 + [f"I love the chocolatey crunch {i}" for i in range(6)] + [f"chocolate is nice {i}" for i in range(20)]
+    texts += ["Love how chocoatey they are", "The price is a bit steap for it", "a bit biscuity"]
+    fx = spelling.find_corrections(texts, {})
+    assert fx.get("chocoatey") == "chocolatey"          # 1 edit away, not the more common "chocolate" (2 edits)
+    assert "steap" not in fx                             # step / steep / steal: no clear winner, left as written
+    assert "biscuity" not in fx                          # a real word + y
