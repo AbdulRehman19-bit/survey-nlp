@@ -200,3 +200,74 @@ Hand labels from one coder (Eleni) are the only ground truth.
 **Automatic in the app (supersedes the preset selector above).** The app has no settings to choose: it always uses the built-in `config_default.yaml`. Themes are discovered from the answers, each question's polarity is read from its answers (it can be overridden per question), the general-English rating rules are on, and a built-in "General comment" theme (matched by meaning, not by keywords) receives generic remarks and every clause nothing else matched, so every answer has a theme. Other `config*.yaml` files are still used from the command line (`survey-nlp run --config ...`). On the beverage file this way: overall accuracy 0.936, macro-F1 0.755, polarity agreement 0.966, 0 of 500 answers without a theme. Agreement of the discovered theme names with Eleni's codebook is low (weighted F1 0.36), as the names are discovered, not given.
 
 **Themes by topic, named from their clusters.** Embeddings are clustered after removing one direction: positive-vs-negative wording (`themes.sentiment_axis`, plain English anchors, on in `config_default.yaml`), so a topic no longer splits into a praise cluster and a complaint cluster. The same transform is used for theme seeds and for assignment. Each discovered theme is then named from its own cluster: candidates are the cluster's distinctive nouns or one-word adjectives; the winner is the one most of the cluster's clauses use and whose meaning is closest to the cluster centre (`name_share_weight`, `name_min_share`); evaluation words ("good", "nice") are never names. Order: cluster, name, assign clauses to themes, rate each theme. Rating direction of a question is now also inferred from the answers that took a side (Neutral ones ignored) and, if they do not decide, from the question's wording. Generic default on the beverage file: overall accuracy 0.938, macro-F1 0.757, polarity 0.970, 0 answers without a theme, theme-name F1 vs the codebook 0.40 (was 0.36). Known: some leftover non-answers ("No, nothing disappointed me") are still rated; with a total of 10 the smallest discovered theme (e.g. Cough Syrup) is the one trimmed; raise the slider to keep it.
+
+## Update 6: keep a one-word piece beside a contrast word
+
+`segment.keep_short_next_to_contrast` (on in `config.yaml` and `config_default.yaml`, off when the key is absent). "No smell, but delicious" used to
+become only "No smell" because "delicious" is under `min_words`; now both halves are kept. A one-word piece is kept only inside an answer that was split
+at but/however/..., when it is alphabetic, at least 3 letters and not in `segment.short_not_opinion` (nothing, none, also, just ...).
+Discovery still ignores clauses under `themes.min_words`, so the themes do not change; on the Coco file the only difference is one extra clause.
+
+## Update 7: the app suggests how many themes
+
+`suggest.py` + a "Suggest a number of themes" button on the Data page of the app. It finds the themes again for each count from 4 to 16
+(at most one per 20 usable clauses), scores every set with the quality report, and recommends a count: clean sets only (no mixed, weakly named, repeated or tiny theme), then of the sets within 0.15 of the best
+coherence + mean name coverage the one with the MOST themes (the tightest set alone would always be the smallest count). Nothing is saved by the sweep. About 2.5 minutes on the Coco file (565 clauses).
+
+## Update 8: generic keywords no longer pull unrelated answers into a theme
+
+`assign.keyword_min_precision` was set in the configs but no code read it. It now works (`assign._drop_generic`): a matching word (discovered from the theme's
+name, or typed by a person) is left out when, of the clauses containing it (at least `assign.keyword_precision_min_clauses`, default 5), fewer than that
+share are close in meaning to the theme (similarity at least `assign.min_sim`). The left-out words are in `assign.attrs["dropped_keywords"]`, and the app lists them
+under the themes table. Example (Speculoos file, Packaging typed with "packaging, small, product"): "small" (16 answers, 6 close) and "product" (20, 8 close)
+are dropped; Packaging goes from 59 to 39 matches and its weak matches (similarity under 0.4) from 31 to 13. The generic name word "flavor" of the Flavor theme
+(52 answers, 19 close) is dropped too (72 to 55 matches).
+
+## Update 9: `assign.fallback_min_sim` 0.25 -> 0.30
+
+Measured against the human codes for `data/open_ends.xlsx` (500 answers, discovered themes, weighted theme F1): fallback off 0.549, 0.25 0.564, 0.30 0.562, 0.35 0.561.
+Between 0.25 and 0.35 the differences are within noise, so the higher floor costs no accuracy and sends the weakest borderline clauses ("Powder", "Just a tad too
+expensive" into Packaging) to Not Specific instead (8.3% -> 9.1% of matches). 0.35 was not chosen: it moves more clauses (Not Specific 10.7%) for no gain.
+Changed in `config_default.yaml` only; `config_beverage.yaml` already used 0.3 and `config.yaml` has no fallback.
+
+Update 7 follow-up: the suggestion also counts Not Specific. The sweep table has `not_specific`, `unmatched` (no theme at all), `largest_theme` and `gini`; a count with
+more than 25% of the clauses unexplained is rejected, and the score is coherence + mean name coverage - the unexplained share.
+
+Update 7 follow-up 2: the suggestion also looks at the smallest theme from above. A count whose smallest theme holds more than 15% of the clauses is rejected
+(every theme is too broad), and the smallest theme's share is subtracted from the score. `tolerance` is now 0.10 (the score has two more terms).
+On the Speculoos sweep this rejects 4 and 5 (smallest theme 17-20% of the file) and suggests 9.
+
+## Update 10: honest Not Specific count, real matching words, safer spelling repair
+
+- **Themes table (app):** "Not Specific" counts real answers only. The non-answers ("Nothing", "N/A") were counted there, so a Dislike question with 109 of them
+  showed 151 instead of about 42. A note under the table gives the number of non-answers; the results file still lists them under Not Specific as Neutral.
+- **"Matching words" column:** shows the words that really match clauses to the theme (`assign.matching_words`: the words a person wrote, otherwise the distinctive
+  words of the theme's name, minus words dropped by the precision check), not the longer description list ("step, think", "fun, liked, really good").
+- **Spelling repair (`spelling.py`):** the closest spelling now wins ("chocoatey" -> "chocolatey", 1 edit, no longer "chocolate", 2 edits); among equally close words a
+  change is made only when one clearly wins, otherwise the word is left as written ("steap" was changed to "step"; it could be step, steep or steal); a real word + "y"
+  ("biscuity") is not treated as a typo. On the Coco file: 18 words repaired instead of 20, both wrong repairs gone.
+
+## Update 11: up to 3 themes per clause (was 2)
+
+`assign.max_themes_per_clause` now also sets how many themes a clause can reach by meaning (it was fixed at the top 2; the setting only trimmed). A further theme must
+reach `assign.min_sim` and be within `assign.secondary_margin` of the clause's best theme. New optional `assign.secondary_min_sim` (default = `min_sim`) for a lower entry bar of further themes.
+Defaults in `config_default.yaml`: 3 themes, margin 0.25 (were 2 and 0.1). Measured on `data/open_ends.xlsx` against the human codes (weighted theme F1, themes per answer; the coder has 1.71):
+cap 2 / margin 0.1: 0.564, 1.32 - cap 3 / 0.1: 0.570, 1.35 - cap 3 / 0.15: 0.588, 1.46 - cap 3 / 0.20: 0.602, 1.58 - cap 3 / 0.25: 0.606, 1.67 - cap 4 / 0.15: 0.587 (no gain over 3).
+Lowering the entry bar of further themes (`secondary_min_sim` 0.35 / 0.30): F1 0.610 / 0.599 but 1.97 / 2.17 themes per answer, more than the coder: not adopted.
+On the Coco file: 1.73 themes per answer (was 1.31).
+
+## Update 12: optional cut at "and" (`segment.split_and_min_words`, off by default)
+
+"Stays crispy for ages in milk and the two chocolates go together brilliantly" has two topics in one clause, and a clause's meaning vector is diluted by both. With
+`segment.split_and_min_words: N` an answer part is also cut at "and" when both sides have at least N words ("white and chocolate pieces", "sweet and sour" stay whole).
+Measured on `data/open_ends.xlsx` against the human codes (weighted theme F1, themes per answer; coder 1.71): off 0.606, 1.67 - N=3 0.644, 1.90 - N=4 0.638, 1.74.
+On the Coco file there is no clear gain: the clause count goes from 565 to 633, the themes are found again and change (Taste and Cereal disappear, "Idea" and "Sugar" appear at 10 themes), and
+the quality report is mixed (at 10 themes: 0 mixed against 1, name fit 0.55 against 0.52; at 11-12 themes: name fit 0.44-0.45 against 0.52-0.53). Left off by default: one coder, one file.
+
+## Update 13: "milk chocolate" is not a hit of the Milk theme (`assign._keyword_hits`)
+
+The precision check of update 8 dropped the Milk theme's own word "milk" (59 clauses contain it, only 27 close to Milk), so answers about the cereal in milk
+("stays crunchy in milk", "good with cold milk") were missed: 26 of the 59 reached the Milk theme. The 59 are two kinds of clause: milk as the liquid (about 41) and
+"milk chocolate" / "milk flavour" (about 18, which belong to Chocolate and Flavour). A keyword next to a word that names another theme ("milk chocolate", "milk flavour",
+"white chocolate") is now not counted as a hit of this theme, and the precision check judges the remaining clauses. On the Coco file "milk" is kept (36 of the 59 clauses
+reach Milk, the milk-chocolate and milk-flavour ones do not), and Milk grows from 35 to 45 matches. "pieces" is still dropped from Pieces (32 clauses, 15 close).

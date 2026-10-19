@@ -33,6 +33,8 @@ input:
     min_unique_ratio: 0.3
 
 segment:
+  keep_short_next_to_contrast: true
+  short_not_opinion: ["nothing", "none", "nope", "no", "yes", "also", "well", "and", "still", "only", "just", "really", "actually", "honestly", "overall", "otherwise", "however", "anyway", "though", "then", "now"]
   contrast_words: [but, however, although, though, yet, whereas]
   min_words: 2
 

@@ -34,6 +34,8 @@ input:
     min_unique_ratio: 0.3
   layout: auto
 segment:
+  keep_short_next_to_contrast: true   # a one-word piece beside but/however/... is kept ("No smell, but delicious"), unless it is in short_not_opinion
+  short_not_opinion: ["nothing", "none", "nope", "no", "yes", "also", "well", "and", "still", "only", "just", "really", "actually", "honestly", "overall", "otherwise", "however", "anyway", "though", "then", "now"]
   contrast_words:
   - but
   - however
@@ -42,6 +44,7 @@ segment:
   - yet
   - whereas
   min_words: 2
+  split_and_min_words: 0          # 0 = off. N = also cut at "and" when both sides have at least N words ("crispy in milk and the two chocolates go together"); see CHANGELOG update 12
 embed:
   model: BAAI/bge-small-en-v1.5
   batch_size: 128
@@ -52,6 +55,7 @@ themes:
   scope: pooled
   spacy_model: en_core_web_sm
   min_words: 2
+  split_and_min_words: 0          # 0 = off. N = also cut at "and" when both sides have at least N words ("crispy in milk and the two chocolates go together"); see CHANGELOG update 12
   max_fit_clauses: 20000
   fallback_max_clauses: 4000
   umap_dims: 5
@@ -102,13 +106,13 @@ themes:
   required_merge_cos: 0.95        # a built-in theme is added as its own theme, never renames a discovered one
 assign:
   min_sim: 0.4
-  secondary_margin: 0.1
+  secondary_margin: 0.25
   keyword_min_len: 3
   name_keyword_max_share: 0.10  # a word of a longer theme name found in more than 10% of all clauses ("taste" in "Original Taste") does not match by itself. Delete this line to turn it off.
   center: true
   keyword_min_precision: 0.5
-  fallback_min_sim: 0.25
-  max_themes_per_clause: 2
+  fallback_min_sim: 0.30
+  max_themes_per_clause: 3
   use_discovered_keywords: false
   general_min_sim: 0.9          # a clause this close in meaning to a general comment below is left without a theme
   general_examples:
