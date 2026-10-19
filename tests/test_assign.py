@@ -157,3 +157,30 @@ def test_a_name_whose_words_are_all_common_keeps_them():
     cfg = {"assign": {"min_sim": 0.9, "secondary_margin": 0.03, "keyword_min_len": 3, "keyword_min_sim": 0, "name_keywords": True,
                       "name_keyword_max_share": 0.5}}
     assert sorted(run(clauses, E, themes, C, cfg).clause_id) == [0, 1, 2]       # "white" and "chocolate" are both in over half: both stay
+
+
+def test_generic_keyword_dropped():
+    import numpy as np
+    import pandas as pd
+    from survey_nlp import assign
+    texts = pd.Series(["the packaging is nice"] * 6 + ["this product is good"] * 10 + ["the product box is small"] * 2)
+    sim = np.array([0.8] * 6 + [0.1] * 10 + [0.7] * 2)               # "product" is mostly about something else
+    dropped = {}
+    mask, kept = assign._keyword_hits(["packaging", "product"], texts, sim, "Packaging", {"keyword_min_precision": 0.5, "min_sim": 0.4}, dropped)
+    assert kept == ["packaging"] and dropped["Packaging"] == [("product", 12, 2)] and mask.sum() == 6
+    assert assign._keyword_hits(["product"], texts, sim, "P", {"min_sim": 0.4}, {})[1] == ["product"]      # off when not set
+    few = assign._keyword_hits(["small"], texts, sim, "P", {"keyword_min_precision": 0.5, "min_sim": 0.4}, {})[1]
+    assert few == ["small"]                                           # only 1 clause has the word: too little evidence to judge
+
+
+def test_keyword_next_to_another_themes_word_is_not_a_hit():
+    import numpy as np
+    import pandas as pd
+    from survey_nlp import assign
+    texts = pd.Series(["it got soggy in milk"] * 6 + ["i like milk chocolate"] * 6 + ["good with the milk flavour"] * 4)
+    sim = np.array([0.7] * 6 + [0.1] * 10)
+    c = {"keyword_min_precision": 0.5, "min_sim": 0.4}
+    # without the neighbour rule "milk" is in 16 clauses and only 6 are about Milk: dropped
+    assert assign._keyword_hits(["milk"], texts, sim, "Milk", c, {})[1] == []
+    mask, kept = assign._keyword_hits(["milk"], texts, sim, "Milk", c, {}, others={"chocolate", "flavour"})
+    assert kept == ["milk"] and mask.sum() == 6                       # the "milk chocolate" / "milk flavour" clauses belong to other themes

@@ -4,6 +4,9 @@ import pandas as pd
 from .util import axis_of, center, sha
 
 
+_STOP_NAME = {"not", "specific", "the", "and"}
+
+
 def _rx(kws):
     """Case-insensitive whole-word pattern. A keyword starting with "re:" is used as a raw regex."""
     parts = [k[3:] if k.startswith("re:") else r"\b" + re.escape(k) + r"\b" for k in kws]
@@ -48,6 +51,45 @@ def _name_words(themes, c, clauses=None):
     return out
 
 
+def matching_words(themes, c, clauses=None):
+    """The words that really match clauses to each theme (what `run` uses before the precision check): the words a person wrote, otherwise
+    the distinctive words of the theme's name. Not the longer list of 'main words' the discovery found, which is only a description."""
+    name_kws = _name_words(themes, c, clauses)
+    return [list(t.get("curated_keywords") or (t["keywords"] if c.get("use_discovered_keywords") else (name_kws[j] if c.get("name_keywords", True) else [])))
+            for j, t in enumerate(themes)]
+
+
+def _keyword_hits(kws, texts, sim, theme, c, dropped, others=()):
+    """The clauses a theme's keywords match, and the keywords kept.
+
+    1. A keyword next to a word that names ANOTHER theme is a compound of that theme, not this one: "milk" in "milk chocolate" or "milk flavour"
+       belongs to Chocolate or Flavour, so those clauses do not count as hits of the Milk theme ("others" = the other themes' name words).
+    2. assign.keyword_min_precision: of the remaining clauses that contain the keyword (at least assign.keyword_precision_min_clauses, default 5),
+       the share close in meaning to the theme (similarity at least assign.min_sim) must reach the threshold, otherwise the keyword is left out
+       ("product", "small" in a Packaging theme would drag every answer that has the word into it). Also for words a person wrote. The left-out
+       words are listed in the result's `attrs["dropped_keywords"]` so the page can say so."""
+    thr = c.get("keyword_min_precision")
+    need = c.get("keyword_precision_min_clauses", 5)
+    mask = np.zeros(len(texts), bool)
+    keep = []
+    near_rx = None
+    if others:
+        alt = "|".join(re.escape(o) for o in sorted(others, key=len, reverse=True))
+    for k in kws:
+        hit = texts.str.contains(_rx([k]), regex=True).to_numpy()
+        if others and not k.startswith("re:"):
+            ke = re.escape(k)
+            near = texts.str.contains(r"\b(?:" + alt + r")[ -]" + ke + r"\b|\b" + ke + r"[ -](?:" + alt + r")\b", regex=True, case=False).to_numpy()
+            hit = hit & ~near
+        n = int(hit.sum())
+        if thr and n >= need and float((sim[hit] >= c["min_sim"]).mean()) < thr:
+            dropped.setdefault(theme, []).append((k, n, int((sim[hit] >= c["min_sim"]).sum())))
+            continue
+        keep.append(k)
+        mask |= hit
+    return mask, keep
+
+
 def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
     """clauses/E may be a subset (a scope); clause_id values are preserved in the output.
 
@@ -64,15 +106,21 @@ def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
             S[:, j] = np.maximum(S[:, j], (E @ np.asarray(t["sub_centres"], np.float32).T).max(1))
     n = len(S)
     r = np.arange(n)
-    order = np.argsort(-S, axis=1)[:, :2] if S.shape[1] > 1 else np.zeros((n, 2), int)
+    k = max(2, min(int(c.get("max_themes_per_clause") or 2), S.shape[1]))     # how many themes a clause may reach by meaning
+    order = np.argsort(-S, axis=1)[:, :k] if S.shape[1] > 1 else np.zeros((n, 2), int)
     s1, s2 = S[r, order[:, 0]], S[r, order[:, 1]]
     A = np.zeros(S.shape, bool)
     A[r, order[:, 0]] = s1 >= c["min_sim"]
-    sec = (s2 >= c["min_sim"]) & ((s1 - s2) <= c["secondary_margin"]) & (order[:, 1] != order[:, 0])
-    A[r[sec], order[sec, 1]] = True
+    for rank in range(1, order.shape[1]):                                      # further themes: close enough AND within the margin of the best one
+        sr = S[r, order[:, rank]]
+        sec = (sr >= c.get("secondary_min_sim", c["min_sim"])) & ((s1 - sr) <= c["secondary_margin"]) & (order[:, rank] != order[:, 0])
+        A[r[sec], order[sec, rank]] = True
     K = np.zeros_like(A)
     trusted = np.zeros(S.shape[1], bool)                # themes with words a person wrote: those words match whatever the similarity
     name_kws = _name_words(themes, c, clauses)
+    dropped = {}                                        # theme -> [(keyword, clauses it appears in, of those close to the theme)]
+    name_words = [set(re.findall(r"[a-z']{3,}", t.get("match_name", t["theme_name"]).lower())) for t in themes]
+    name_words = [w - _STOP_NAME for w in name_words]
     for j, t in enumerate(themes):                      # whole-word keyword match, case-insensitive
         # Only words a person wrote for the theme (required themes, curation) match by keyword. The words discovered from the
         # data are right only about 1 time in 3 and made a clause match 3.6 themes on average; set
@@ -80,8 +128,11 @@ def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
         kws = t.get("curated_keywords") or (t["keywords"] if c.get("use_discovered_keywords") else
                                             (name_kws[j] if c.get("name_keywords", True) else []))
         kws = [k for k in kws if k.startswith("re:") or len(k) >= c["keyword_min_len"]]
+        own = set(name_words[j])
+        others = set().union(*[w for k2, w in enumerate(name_words) if k2 != j]) - own
+        mask, kws = _keyword_hits(kws, clauses["clause"], S[:, j], t["theme_name"], c, dropped, others)
         if kws:                                         # a keyword starting with "re:" is a raw regex
-            K[:, j] = clauses["clause"].str.contains(_rx(kws), regex=True).to_numpy()
+            K[:, j] = mask
             trusted[j] = bool(t.get("curated_keywords"))
             if not trusted[j]:                          # a word taken from the theme's name only counts when the clause is also close in meaning
                 K[:, j] &= S[:, j] >= c.get("keyword_min_sim", 0.25)   # ("pieces" in "mostly white pieces and they go slimy in milk" is not about Pieces)
@@ -132,5 +183,7 @@ def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
         ii, jj = ii[keep], jj[keep]
     via = np.where(A[ii, jj] & K[ii, jj], "both",
                    np.where(A[ii, jj], "semantic", np.where(K[ii, jj], "keyword", "fallback")))
-    return pd.DataFrame({"clause_id": clauses.clause_id.to_numpy()[ii], "theme_idx": jj,
-                         "sim": S[ii, jj], "via": via})
+    out = pd.DataFrame({"clause_id": clauses.clause_id.to_numpy()[ii], "theme_idx": jj,
+                        "sim": S[ii, jj], "via": via})
+    out.attrs["dropped_keywords"] = dropped
+    return out

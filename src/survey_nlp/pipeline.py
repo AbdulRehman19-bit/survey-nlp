@@ -75,7 +75,13 @@ def _compute(name, cfg, art, timings):
             a = asg.run(art["segment"][m].reset_index(drop=True), art["embed"][m], themes, C, cfg)
             a["scope"] = s
             parts.append(a)
-        return pd.concat(parts, ignore_index=True)
+        out = pd.concat(parts, ignore_index=True)
+        dropped = {}
+        for a in parts:
+            for theme, words in a.attrs.get("dropped_keywords", {}).items():
+                dropped.setdefault(theme, []).extend(words)
+        out.attrs["dropped_keywords"] = dropped
+        return out
     if name == "overall":
         return sentiment.run_overall(unique_texts(long), cfg)
     if name == "absa":
