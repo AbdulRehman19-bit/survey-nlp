@@ -538,7 +538,9 @@ def render_data_tab():
                     text_cols=text_cols, polarity=polarity, preset=preset_name, min_sim=MIN_SIM, fallback=FALLBACK_SIM, evidence=EVIDENCE,
                     run_dir=str(session_dir() / stem), edits=st.session_state.edits)
     st.session_state.settings = settings
-    render_suggestion(settings)
+    SHOW_THEME_SUGGESTION = False       # hidden for now; set True to bring the "Suggest a number of themes" section back
+    if SHOW_THEME_SUGGESTION:
+        render_suggestion(settings)
     st.success("Data ready. Go to the **Themes and analysis** tab.")
     st.button("Go to Themes and analysis",      # start_find: this button also starts the search; opening the tab by hand does not
               on_click=lambda: st.session_state.update(main_tabs="2 · Themes and analysis", start_find=True))
