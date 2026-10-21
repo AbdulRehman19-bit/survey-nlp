@@ -613,11 +613,6 @@ def render_themes_tab():
         tv = st.session_state.get("table_version", 0)              # new key whenever the themes change: a kept widget would still show the old names
         st.dataframe(table.drop(columns=["_orig", "Keep"]), hide_index=True, width="stretch",
                      height=min(35 * (len(table) + 1) + 3, 600))      # every row visible (about 35 px per row), a scroll bar only when very long
-        if "ingest" in art:
-            n_non = int((~art["ingest"][0].valid).sum())
-            if n_non:
-                st.caption(f"Not Specific counts real answers that name no clear topic. The {n_non} non-answers (\"Nothing\", \"N/A\") are not counted in the table; "
-                           "the results file shows them under Not Specific as Neutral.")
 
         names = list(table["Theme"])
         e1, e2, e3, e4 = st.columns(4)
@@ -724,14 +719,11 @@ with tab_results:
         st.warning("The standard results file is open in Excel, so this run was saved under a different name.")
 
     # headline numbers
-    m = st.columns(4, gap="medium")
+    m = st.columns(3, gap="medium")
     n_answers = sum(len(sheets[q]) for q in question_sheets)                             # every respondent row, as in the file
-    themed = sum(int((sheets[q][[c for c in sheets[q].columns if c not in NOT_THEMES]].notna().any(axis=1)).sum())
-                 for q in question_sheets)
     m[0].metric("Answers", f"{n_answers:,}")
-    m[1].metric("With at least one theme", f"{themed / max(n_answers, 1):.0%}")
-    m[2].metric("Questions", len(question_sheets))
-    m[3].metric("Themes", len(sheets["themes"]))
+    m[1].metric("Questions", len(question_sheets))
+    m[2].metric("Themes", len(sheets["themes"]))
 
     graphs = st.container()                       # filled below, once the question filter in the Answers section has been read
     st.subheader("Answers")
