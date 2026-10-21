@@ -271,3 +271,19 @@ The precision check of update 8 dropped the Milk theme's own word "milk" (59 cla
 "milk chocolate" / "milk flavour" (about 18, which belong to Chocolate and Flavour). A keyword next to a word that names another theme ("milk chocolate", "milk flavour",
 "white chocolate") is now not counted as a hit of this theme, and the precision check judges the remaining clauses. On the Coco file "milk" is kept (36 of the 59 clauses
 reach Milk, the milk-chocolate and milk-flavour ones do not), and Milk grows from 35 to 45 matches. "pieces" is still dropped from Pieces (32 clauses, 15 close).
+
+## Update 14: a one-word theme name matches by itself, and in the plural (`assign.name_word_exempt`, `assign.keyword_plural`)
+
+"The combination of the two flavors is really great, it's super delicious" went to Not Specific. Its closest specific theme was Crunch (0.27), Flavor only 0.16, below `fallback_min_sim`,
+and nothing matched by word: the Flavor theme is matched under its discovery name "Cinnamon Flavor", whose word "flavor" is in 21% of the clauses (too common to match alone), and
+"flavors" is not "flavor" either. Lowering `fallback_min_sim` was no fix (F1 0.603 / 0.606 / 0.606 / 0.606 at 0.30 / 0.25 / 0.20 / 0.15, and 0.25 would have sent the clause to Crunch).
+Now a theme shown with a one-word name ("Flavor") also matches that word, skipping the precision check and the meaning guard, and a matching word also matches its plural.
+Measured on `data/open_ends.xlsx` against the human codes (weighted theme F1, themes per answer): before 0.603, 1.65 - label word 0.618, 1.69 - plural only 0.603, 1.66 - both 0.617, 1.69.
+On the Speculoos file Flavor grows from 64 to 82 matches ("Super great flavor", "I love the combination of flavors"), 4 matches move away (a bare "Flavor" leaves Texture for Flavor).
+Both are on in `config_default.yaml`; set `assign.name_word_exempt: false` / `assign.keyword_plural: false` to go back.
+
+Update 14 follow-up: `eval/theme_f1.py` now scores a run against the human codes (`python eval/theme_f1.py runs/x`) and lists the differences between two runs (`--diff`).
+The exemption applies to every one-word theme name, not only renamed ones. `name_word_exempt: renamed` limits it to a theme whose shown name differs from its matching name
+("Flavor" / "Cinnamon Flavor"): F1 0.602 on `open_ends.xlsx` (no gain, the gain above comes from the other one-word names) and on the Coco file only Chocolate (+13) and a few Taste/Flavour
+matches are added, all plausible. With `true`, Coco adds 15 Pieces matches (all about pieces) and 4 Milk matches, 2 of them wrong ("milk and white chocolate pieces": the two words are not adjacent,
+so the neighbour rule of update 13 does not see a compound). `true` stays the default for the benchmark gain; use `renamed` if Milk-like false matches matter more than recall.

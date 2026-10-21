@@ -184,3 +184,26 @@ def test_keyword_next_to_another_themes_word_is_not_a_hit():
     assert assign._keyword_hits(["milk"], texts, sim, "Milk", c, {})[1] == []
     mask, kept = assign._keyword_hits(["milk"], texts, sim, "Milk", c, {}, others={"chocolate", "flavour"})
     assert kept == ["milk"] and mask.sum() == 6                       # the "milk chocolate" / "milk flavour" clauses belong to other themes
+
+
+def test_one_word_label_matches_by_itself_and_in_plural():
+    import numpy as np
+    import pandas as pd
+    from survey_nlp import assign
+    c = {"keyword_min_precision": 0.5, "min_sim": 0.4, "keyword_min_len": 3}
+    texts = pd.Series(["the flavors blend well"] * 3 + ["great flavor"] * 3 + ["a flavour of mint"] * 3 + ["nothing here"] * 6)
+    sim = np.array([0.1] * 15)                                         # no clause is close in meaning to the theme
+    close = np.array([0.8] * 15)
+    assert assign._keyword_hits(["flavor"], texts, close, "Flavor", c, {})[0].sum() == 3
+    plural = dict(c, keyword_plural=True)
+    assert assign._keyword_hits(["flavor"], texts, close, "Flavor", plural, {})[0].sum() == 6
+    dropped = {}
+    assert assign._keyword_hits(["flavor"], texts, sim, "Flavor", plural, dropped)[1] == [] and "Flavor" in dropped   # far in meaning: dropped
+    ex = []
+    mask, kept = assign._keyword_hits(["flavor"], texts, sim, "Flavor", plural, {}, exempt={"flavor"}, ex_out=ex)
+    assert kept == ["flavor"] and ex[0].sum() == 6
+    t = {"theme_name": "Flavor", "match_name": "Cinnamon Flavor"}
+    assert assign._label_word(t, c) is None and assign._label_word(t, dict(c, name_word_exempt=True)) == "flavor"
+    assert assign._label_word({"theme_name": "White Chocolate"}, dict(c, name_word_exempt=True)) is None
+    ren = dict(c, name_word_exempt="renamed")
+    assert assign._label_word(t, ren) == "flavor" and assign._label_word({"theme_name": "Milk", "match_name": "Milk"}, ren) is None

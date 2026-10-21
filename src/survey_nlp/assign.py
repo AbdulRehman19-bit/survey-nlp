@@ -51,15 +51,31 @@ def _name_words(themes, c, clauses=None):
     return out
 
 
+def _label_word(t, c):
+    """assign.name_word_exempt: the shown name of a theme when it is a single word ("Flavor") that the matching name ("Cinnamon Flavor") does not
+    reduce to. That word is the topic the reader sees, so it matches by itself, whatever its share of all clauses."""
+    if not c.get("name_word_exempt") or t.get("curated_keywords"):
+        return None
+    w = re.findall(r"[a-z']+", t["theme_name"].lower())
+    if c["name_word_exempt"] == "renamed" and t.get("match_name", t["theme_name"]).lower() == t["theme_name"].lower():
+        return None                                     # "renamed": only a theme whose shown name differs from the name it is matched by
+    return w[0] if len(w) == 1 and len(w[0]) >= c["keyword_min_len"] and w[0] not in _STOP_NAME else None
+
+
 def matching_words(themes, c, clauses=None):
     """The words that really match clauses to each theme (what `run` uses before the precision check): the words a person wrote, otherwise
     the distinctive words of the theme's name. Not the longer list of 'main words' the discovery found, which is only a description."""
     name_kws = _name_words(themes, c, clauses)
-    return [list(t.get("curated_keywords") or (t["keywords"] if c.get("use_discovered_keywords") else (name_kws[j] if c.get("name_keywords", True) else [])))
-            for j, t in enumerate(themes)]
+    out = [list(t.get("curated_keywords") or (t["keywords"] if c.get("use_discovered_keywords") else (name_kws[j] if c.get("name_keywords", True) else [])))
+           for j, t in enumerate(themes)]
+    for j, t in enumerate(themes):
+        w = _label_word(t, c)
+        if w and w not in out[j]:
+            out[j].append(w)
+    return out
 
 
-def _keyword_hits(kws, texts, sim, theme, c, dropped, others=()):
+def _keyword_hits(kws, texts, sim, theme, c, dropped, others=(), exempt=(), ex_out=None):
     """The clauses a theme's keywords match, and the keywords kept.
 
     1. A keyword next to a word that names ANOTHER theme is a compound of that theme, not this one: "milk" in "milk chocolate" or "milk flavour"
@@ -67,26 +83,37 @@ def _keyword_hits(kws, texts, sim, theme, c, dropped, others=()):
     2. assign.keyword_min_precision: of the remaining clauses that contain the keyword (at least assign.keyword_precision_min_clauses, default 5),
        the share close in meaning to the theme (similarity at least assign.min_sim) must reach the threshold, otherwise the keyword is left out
        ("product", "small" in a Packaging theme would drag every answer that has the word into it). Also for words a person wrote. The left-out
-       words are listed in the result's `attrs["dropped_keywords"]` so the page can say so."""
+       words are listed in the result's `attrs["dropped_keywords"]` so the page can say so.
+    3. `exempt` (assign.name_word_exempt): the word that is the whole name of the theme ("flavor" for Flavor) skips the precision check, and its
+       hits are appended to `ex_out` so the caller can skip the meaning guard too. assign.keyword_plural matches "flavors" for "flavor"."""
     thr = c.get("keyword_min_precision")
     need = c.get("keyword_precision_min_clauses", 5)
     mask = np.zeros(len(texts), bool)
+    ex_mask = np.zeros(len(texts), bool)
     keep = []
-    near_rx = None
+    plural = c.get("keyword_plural", False)
     if others:
         alt = "|".join(re.escape(o) for o in sorted(others, key=len, reverse=True))
     for k in kws:
-        hit = texts.str.contains(_rx([k]), regex=True).to_numpy()
+        rx = re.compile(r"\b" + re.escape(k) + r"(?:e?s)?\b", re.I) if plural and not k.startswith("re:") else _rx([k])
+        hit = texts.str.contains(rx, regex=True).to_numpy()
         if others and not k.startswith("re:"):
             ke = re.escape(k)
             near = texts.str.contains(r"\b(?:" + alt + r")[ -]" + ke + r"\b|\b" + ke + r"[ -](?:" + alt + r")\b", regex=True, case=False).to_numpy()
             hit = hit & ~near
         n = int(hit.sum())
+        if k in exempt:
+            keep.append(k)
+            mask |= hit
+            ex_mask |= hit
+            continue
         if thr and n >= need and float((sim[hit] >= c["min_sim"]).mean()) < thr:
             dropped.setdefault(theme, []).append((k, n, int((sim[hit] >= c["min_sim"]).sum())))
             continue
         keep.append(k)
         mask |= hit
+    if ex_out is not None:
+        ex_out.append(ex_mask)
     return mask, keep
 
 
@@ -130,12 +157,18 @@ def run(clauses, E, themes, C, cfg) -> pd.DataFrame:
         kws = [k for k in kws if k.startswith("re:") or len(k) >= c["keyword_min_len"]]
         own = set(name_words[j])
         others = set().union(*[w for k2, w in enumerate(name_words) if k2 != j]) - own
-        mask, kws = _keyword_hits(kws, clauses["clause"], S[:, j], t["theme_name"], c, dropped, others)
+        lw = _label_word(t, c)
+        if lw and lw not in kws:
+            kws = kws + [lw]
+        exempt = {lw} if lw else set()
+        ex_out = []
+        mask, kws = _keyword_hits(kws, clauses["clause"], S[:, j], t["theme_name"], c, dropped, others, exempt, ex_out)
+        ex_mask = ex_out[0]
         if kws:                                         # a keyword starting with "re:" is a raw regex
             K[:, j] = mask
             trusted[j] = bool(t.get("curated_keywords"))
             if not trusted[j]:                          # a word taken from the theme's name only counts when the clause is also close in meaning
-                K[:, j] &= S[:, j] >= c.get("keyword_min_sim", 0.25)   # ("pieces" in "mostly white pieces and they go slimy in milk" is not about Pieces)
+                K[:, j] &= (S[:, j] >= c.get("keyword_min_sim", 0.25)) | ex_mask   # ("pieces" in "mostly white pieces and they go slimy in milk" is not about Pieces)
     general = [j for j, t in enumerate(themes) if t.get("general")]
     if c.get("general_examples") and not general:       # generic remarks are left without a theme (only when no theme wants them)
         left = _general_sim(E_raw, cfg) >= c.get("general_min_sim", 0.9)

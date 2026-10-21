@@ -112,6 +112,8 @@ assign:
   center: true
   keyword_min_precision: 0.5
   fallback_min_sim: 0.30
+  name_word_exempt: true        # a theme shown with a one-word name ("Flavor") matches that word whatever its share of all clauses; skips the precision check and the meaning guard. renamed = only a theme whose shown name differs from its matching name. false = off
+  keyword_plural: true          # a matching word also matches its plural ("flavor" matches "flavors")
   max_themes_per_clause: 3
   use_discovered_keywords: false
   general_min_sim: 0.9          # a clause this close in meaning to a general comment below is left without a theme
