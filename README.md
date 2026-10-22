@@ -1,13 +1,3 @@
----
-title: Survey Sentiment Analysis
-emoji: 📊
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 8501
-pinned: false
----
-
 # Survey NLP: open-ended answers to themes and per-theme sentiment
 
 Reads the open-ended answers of a survey (Excel or CSV), finds the topics people talk about (themes), and rates how people feel about each
