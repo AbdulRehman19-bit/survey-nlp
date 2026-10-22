@@ -763,10 +763,5 @@ with tab_results:
     st.dataframe(view.style.map(colour_cell), width="stretch", height=520, hide_index=True)
 
     st.divider()
-    d1, d2 = st.columns(2)
-    d1.download_button("Download the Excel workbook", data=Path(f).read_bytes(), file_name="survey_results.xlsx",
+    st.download_button("Download the Excel workbook", data=Path(f).read_bytes(), file_name="survey_results.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
-    with d2.expander("Run times"):
-        tf = Path(f).parent / "timings.json"
-        if tf.exists():
-            st.dataframe(pd.DataFrame([{"stage": k, "seconds": v} for k, v in json.loads(tf.read_text()).items()]), hide_index=True)

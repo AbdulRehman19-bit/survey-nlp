@@ -301,8 +301,7 @@ def run(art, cfg, timings):
             _colour(xw.sheets["results"], colour_of)
         if words is not out and not long_mode:
             out.to_excel(xw, sheet_name="results_codes", index=False)
-        detail.to_excel(xw, sheet_name="detail", index=False)
-        # the pairs, themes, quality and timings sheets are no longer written (quality.json, timings.json and discovered_themes.json keep the detail)
+        # the detail, pairs, themes, quality and timings sheets are no longer written (quality.json, timings.json and discovered_themes.json keep the detail)
         sp_file = rd / "spelling_corrections.json"
         if sp_file.exists() and json.loads(sp_file.read_text()):                 # typos repaired before the models read the answers
             pd.DataFrame(json.loads(sp_file.read_text())).to_excel(xw, sheet_name="spelling", index=False)
