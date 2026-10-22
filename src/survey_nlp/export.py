@@ -302,18 +302,10 @@ def run(art, cfg, timings):
         if words is not out and not long_mode:
             out.to_excel(xw, sheet_name="results_codes", index=False)
         detail.to_excel(xw, sheet_name="detail", index=False)
-        pairs.to_excel(xw, sheet_name="pairs", index=False)
-        theme_tbl.to_excel(xw, sheet_name="themes", index=False)
-        if report:
-            q_summary.to_excel(xw, sheet_name="quality", index=False)               # run summary, then one row per theme underneath
-            q_themes.to_excel(xw, sheet_name="quality", index=False, startrow=len(q_summary) + 3)
-            for cell in xw.sheets["quality"][len(q_summary) + 4]:
-                cell.font = Font(bold=True)
-            _style(xw.sheets["quality"], lambda h: 18)
+        # the pairs, themes, quality and timings sheets are no longer written (quality.json, timings.json and discovered_themes.json keep the detail)
         sp_file = rd / "spelling_corrections.json"
         if sp_file.exists() and json.loads(sp_file.read_text()):                 # typos repaired before the models read the answers
             pd.DataFrame(json.loads(sp_file.read_text())).to_excel(xw, sheet_name="spelling", index=False)
-        pd.DataFrame([{"stage": k, "seconds": v} for k, v in timings.items()]).to_excel(xw, sheet_name="timings", index=False)
     (rd / "discovered_themes.json").write_text(json.dumps({s: t for s, (t, _) in T.items()}, indent=2))
     (rd / "timings.json").write_text(json.dumps(timings, indent=2))
     if report:

@@ -417,7 +417,7 @@ def render_suggestion(settings: dict):
         bar = st.progress(0.0, text="Preparing the answers…")
 
         def tick(done, total, n):
-            bar.progress(done / total, text=f"Tested {done} of {total} counts (last: {n} themes)")
+            bar.progress(done / total, text=f"Tested {done} of {total} counts")
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 table = suggest.sweep(str(cfg_path), lambda n: overrides_for(cfg, {**settings["edits"], "n_themes": n, "ops": []}), progress=tick)
@@ -611,7 +611,7 @@ def render_themes_tab():
         table = themes_table(art, cfg)
         all_themes = [t for ts, _ in art["themes"].values() for t in ts]
         tv = st.session_state.get("table_version", 0)              # new key whenever the themes change: a kept widget would still show the old names
-        st.dataframe(table.drop(columns=["_orig", "Keep"]), hide_index=True, width="stretch",
+        st.dataframe(table.drop(columns=["_orig", "Keep"]).sort_values("Answers", ascending=False, kind="stable"), hide_index=True, width="stretch",
                      height=min(35 * (len(table) + 1) + 3, 600))      # every row visible (about 35 px per row), a scroll bar only when very long
 
         names = list(table["Theme"])
@@ -723,7 +723,7 @@ with tab_results:
     n_answers = sum(len(sheets[q]) for q in question_sheets)                             # every respondent row, as in the file
     m[0].metric("Answers", f"{n_answers:,}")
     m[1].metric("Questions", len(question_sheets))
-    m[2].metric("Themes", len(sheets["themes"]))
+    m[2].metric("Themes", len({c for q in question_sheets for c in sheets[q].columns if c not in NOT_THEMES}))
 
     graphs = st.container()                       # filled below, once the question filter in the Answers section has been read
     st.subheader("Answers")
@@ -767,4 +767,6 @@ with tab_results:
     d1.download_button("Download the Excel workbook", data=Path(f).read_bytes(), file_name="survey_results.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
     with d2.expander("Run times"):
-        st.dataframe(sheets["timings"], hide_index=True)
+        tf = Path(f).parent / "timings.json"
+        if tf.exists():
+            st.dataframe(pd.DataFrame([{"stage": k, "seconds": v} for k, v in json.loads(tf.read_text()).items()]), hide_index=True)
