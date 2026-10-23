@@ -722,7 +722,7 @@ with tab_results:
 
     # headline numbers
     m = st.columns(3, gap="medium")
-    n_answers = sum(len(sheets[q]) for q in question_sheets)                             # every respondent row, as in the file
+    n_answers = sum(int(sheets[q]["Answer"].fillna("").astype(str).str.strip().ne("").sum()) for q in question_sheets)      # rows with something written; empty cells are not answers
     m[0].metric("Answers", f"{n_answers:,}")
     m[1].metric("Questions", len(question_sheets))
     m[2].metric("Themes", len({c for q in question_sheets for c in sheets[q].columns if c not in NOT_THEMES}))
