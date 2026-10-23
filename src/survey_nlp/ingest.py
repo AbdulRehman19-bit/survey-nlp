@@ -44,6 +44,9 @@ def guess_header_row(raw: pd.DataFrame, max_rows: int = 15) -> int:
         if row.empty or row.map(lambda x: isinstance(x, str)).mean() < 0.8:
             continue
         cands.append((i, row.astype(str).str.strip().nunique(), machine_like(row)))
+    ids = [i for i, _, m in cands if m]
+    if ids and ids[0] > 0 and any(i == ids[0] - 1 for i, _, _ in cands):
+        return ids[0] - 1           # section/metadata rows above tie with the question row; the id row marks it (the row right above)
     readable = [c for c in cands if not c[2]] or cands      # the question texts are the header, not the id row under them
     best, best_n = 0, -1
     for i, n, _ in readable:

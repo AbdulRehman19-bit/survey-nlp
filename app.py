@@ -96,7 +96,7 @@ def sheet_names(path: str, mtime: float):
 def load_preview(path: str, mtime: float, sheet, header):
     c = {"path": path, "sheet": sheet, "header_row": header}
     df = ingest.read_table(c)
-    return df
+    return ingest._drop_id_row(df, ingest.detect_text_cols(df, {}))      # the same id row the analysis skips
 
 
 def session_dir() -> Path:
@@ -401,6 +401,9 @@ def forget_data():
         st.session_state.pop(k, None)
 
 
+SHOW_SUGGESTION = False      # the "Not sure how many themes?" block under the theme count
+
+
 def render_suggestion(settings: dict):
     """Under the theme count: test several counts on this file and recommend one. Nothing is saved; the real search runs later."""
     key = (settings["path"], os.path.getmtime(settings["path"]), settings["sheet"], settings["header"],
@@ -538,7 +541,8 @@ def render_data_tab():
                     text_cols=text_cols, polarity=polarity, preset=preset_name, min_sim=MIN_SIM, fallback=FALLBACK_SIM, evidence=EVIDENCE,
                     run_dir=str(session_dir() / stem), edits=st.session_state.edits)
     st.session_state.settings = settings
-    render_suggestion(settings)
+    if SHOW_SUGGESTION:
+        render_suggestion(settings)
     st.success("Data ready. Go to the **Themes and analysis** tab.")
     st.button("Go to Themes and analysis",      # start_find: this button also starts the search; opening the tab by hand does not
               on_click=lambda: st.session_state.update(main_tabs="2 · Themes and analysis", start_find=True))
