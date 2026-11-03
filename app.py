@@ -391,8 +391,7 @@ export, ingest, pipeline = backend()
 from survey_nlp import suggest
 from survey_nlp import assign as asg
 
-TAB_RESULTS = "3 · Results"
-tab_data, tab_themes, tab_results = st.tabs(["1 · Data", "2 · Themes and analysis", TAB_RESULTS], key="main_tabs", on_change="rerun")
+tab_data, tab_themes = st.tabs(["1 · Data", "2 · Themes and analysis"], key="main_tabs", on_change="rerun")
 
 # ----------------------------------------------------------------------------- 1. data
 def forget_data():
@@ -686,26 +685,23 @@ def render_themes_tab():
 
         st.divider()
         if st.session_state.get("analysis_done"):
-            st.success("Finished. Open the **Results** tab.")
-            st.button("Go to results", on_click=lambda: st.session_state.update(main_tabs=TAB_RESULTS))
+            st.success("Finished. The results are below.")
         if st.button("Run the analysis", type="primary"):
             st.session_state.analysis_done = False
             st.session_state.run_analysis = True          # the run happens at the top of the next script pass, before the editors are drawn
             st.rerun()
+        render_results()
 
 
-with tab_themes:
-    render_themes_tab()
-
-# ----------------------------------------------------------------------------- 3. results
-with tab_results:
+# ----------------------------------------------------------------------------- results (shown at the bottom of the themes tab)
+def render_results():
     s = st.session_state.get("settings")
     run_dir = st.session_state.get("result_dir") or (s["run_dir"] if s else None)
     f = latest_results(run_dir) if run_dir else None
     if not f:
-        st.info("The analysis is still running." if st.session_state.get("run_analysis")
-                else "Run the analysis in the previous tab to see results here.")
-        st.stop()
+        return
+    st.divider()
+    st.header("Results")
     for attempt in range(5):                       # the file may still be being written (a run just finished): wait and read again
         try:
             sheets = pd.read_excel(f, sheet_name=None, keep_default_na=False, na_values=[""])      # "N/A" / "None" answers stay as text
@@ -713,7 +709,7 @@ with tab_results:
         except (zipfile.BadZipFile, EOFError):         # a half-written .xlsx raises either one
             if attempt == 4:
                 st.error("The results file is not readable yet (it may still be saving). Reload the page in a moment.")
-                st.stop()
+                return
             time.sleep(1)
     question_sheets = [n for n in sheets if n not in INTERNAL_SHEETS]          # one sheet per open-ended question
     st.caption(f"Results file: {Path(f).name}")
@@ -767,3 +763,7 @@ with tab_results:
     st.divider()
     st.download_button("Download the Excel workbook", data=Path(f).read_bytes(), file_name="survey_results.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+
+
+with tab_themes:
+    render_themes_tab()
